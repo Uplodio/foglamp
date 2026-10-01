@@ -81,7 +81,7 @@ export default defineRailway(() => {
     build: dockerfile,
     env: {
       NODE_ENV: "production",
-      RAILWAY_TARGET: "web",
+      RAILWAY_TARGET: "web-railway",
       PORT: "3001",
       NEXT_PUBLIC_SERVER_URL: "https://${{server.RAILWAY_PUBLIC_DOMAIN}}",
       NEXT_PUBLIC_APP_URL: "https://${{RAILWAY_PUBLIC_DOMAIN}}",

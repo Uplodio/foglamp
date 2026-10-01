@@ -11,6 +11,10 @@
 # Or let compose build them all:  docker compose build
 
 ARG BUN_VERSION=1.2.19
+# Railway: the stage each service runs (server-railway | ingest | web-railway) — see the
+# "railway" stages at the end. Global on purpose: an ARG used in a FROM line must
+# be declared before the first FROM; Railway injects the service variable here.
+ARG RAILWAY_TARGET=web
 
 # ---------- base: install the whole workspace once (lockfile-pinned) ----------
 # .dockerignore keeps node_modules/dist/.next/.env out of the build context.
@@ -111,7 +115,7 @@ CMD ["bun", "run", "examples/hud-demo/src/server.ts"]
 # Railway builds the LAST stage of a Dockerfile and has no --target option, but it
 # injects service variables as build args when they are declared with ARG. Each
 # Railway service sets RAILWAY_TARGET to the stage it runs (server-railway, ingest,
-# web). See .railway/railway.ts.
+# web-railway). See .railway/railway.ts.
 #
 # server-railway keeps the full workspace (unlike the slim `server` stage) so the
 # one-shot bootstrap can run as Railway's pre-deploy command on every deploy:
@@ -124,5 +128,18 @@ EXPOSE 3000
 USER bun
 CMD ["bun", "run", "apps/server/dist/main.mjs"]
 
-ARG RAILWAY_TARGET=web
+# web-railway: the upstream web stage plus the SDK build it needs — the dashboard
+# imports foglamp/hud, whose package exports resolve to packages/sdk/dist.
+FROM base AS web-railway
+ARG NEXT_PUBLIC_SERVER_URL=http://localhost:3000
+ARG NEXT_PUBLIC_APP_URL=http://localhost:3001
+ENV NEXT_PUBLIC_SERVER_URL=${NEXT_PUBLIC_SERVER_URL}
+ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
+RUN bun run --filter foglamp build && bun run --filter web build
+WORKDIR /app/apps/web
+ENV NODE_ENV=production
+ENV PORT=3001
+EXPOSE 3001
+CMD ["bun", "run", "start"]
+
 FROM ${RAILWAY_TARGET} AS railway
