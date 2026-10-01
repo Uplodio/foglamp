@@ -1,0 +1,8 @@
+{
+  "name": "foglamp-railway-config",
+  "private": true,
+  "description": "Dev-only: the railway/iac SDK that .railway/railway.ts imports. Kept out of the bun workspace and the Docker build.",
+  "dependencies": {
+    "railway": "^3.12.0"
+  }
+}

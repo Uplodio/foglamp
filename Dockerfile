@@ -106,3 +106,23 @@ ENV PORT=8080
 EXPOSE 8080
 USER bun
 CMD ["bun", "run", "examples/hud-demo/src/server.ts"]
+
+# ---------- railway: one Railway service per stage, picked by a build arg ----------
+# Railway builds the LAST stage of a Dockerfile and has no --target option, but it
+# injects service variables as build args when they are declared with ARG. Each
+# Railway service sets RAILWAY_TARGET to the stage it runs (server-railway, ingest,
+# web). See .railway/railway.ts.
+#
+# server-railway keeps the full workspace (unlike the slim `server` stage) so the
+# one-shot bootstrap can run as Railway's pre-deploy command on every deploy:
+#   bun run apps/server/scripts/docker-bootstrap.ts   (migrate + CH DDL + seed; idempotent)
+FROM server-build AS server-railway
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=3000
+EXPOSE 3000
+USER bun
+CMD ["bun", "run", "apps/server/dist/main.mjs"]
+
+ARG RAILWAY_TARGET=web
+FROM ${RAILWAY_TARGET} AS railway
