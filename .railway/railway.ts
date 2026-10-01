@@ -26,12 +26,21 @@ export default defineRailway(() => {
   // Span store. Private network only (no domain); the image listens on IPv6.
   const clickhouse = service("clickhouse", {
     source: image("clickhouse/clickhouse-server:24.8-alpine"),
+    // ClickHouse sizes its thread pools and per-query max_threads from the container's
+    // CPU limit. Unlimited (24 vCPU here) made one dashboard page load — nine parallel
+    // queries — exhaust the container's thread budget (CANNOT_SCHEDULE_TASK, code 439).
+    // 2 vCPU / 4 GB is plenty for this span volume and keeps the pools small.
+    deploy: { limitOverride: { containers: { cpu: 2, memoryBytes: 4 * 1024 * 1024 * 1024 } } },
     env: {
       CLICKHOUSE_DB: "foglamp",
       CLICKHOUSE_USER: "default",
       CLICKHOUSE_PASSWORD: preserve(),
     },
-    volumeMounts: { "/var/lib/clickhouse": volume("clickhouse-data") },
+    // Size and region pinned to the live volume: omitting them makes `config apply`
+    // plan a destructive null-out of both and refuse the whole run.
+    volumeMounts: {
+      "/var/lib/clickhouse": volume("clickhouse-data", { sizeMB: 50000, region: "europe-west4-drams3a" }),
+    },
   });
 
   // Shared by server + ingest — the compose file's x-app-env.
@@ -93,6 +102,11 @@ export default defineRailway(() => {
       PORT: "3001",
       NEXT_PUBLIC_SERVER_URL: `https://${API_HOST}`,
       NEXT_PUBLIC_APP_URL: `https://${WEB_HOST}`,
+      // SSR session gate: the web container calls the API over the private network.
+      // It must NOT go through a public hostname — the gate forwards the browser's
+      // Host header, Bun's fetch sends it, and Railway's edge routes by Host, so the
+      // call would land on this web service and return HTML instead of a session.
+      INTERNAL_SERVER_URL: "http://${{server.RAILWAY_PRIVATE_DOMAIN}}:3000",
     },
   });
 
