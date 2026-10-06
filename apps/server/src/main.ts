@@ -43,6 +43,7 @@ import {
   handleScanGet,
   handleScanGetPrevious,
 } from "./scan";
+import { handleMcp } from "./mcp";
 import { handleUnsubscribe } from "./unsubscribe";
 import { pruneScanRateLimits } from "./rateLimit";
 
@@ -186,6 +187,19 @@ app.post(
   handlePlanApplied,
 );
 app.post("/instrumentation-plans/:id/failed", requireApiKey, handlePlanFailed);
+
+// MCP — Foggy's read-only tool set for the user's own coding agent (Claude
+// Code, Cursor, …), authenticated with the project's FOGLAMP_API_KEY. The
+// handler takes every method: the transport answers GET/DELETE itself.
+app.all(
+  "/mcp",
+  requireApiKey,
+  bodyLimit({
+    maxSize: 256 * 1024,
+    onError: (c) => c.json({ error: "payload too large" }, 413),
+  }),
+  handleMcp,
+);
 
 app.get("/", (c) => {
   return c.text("OK");

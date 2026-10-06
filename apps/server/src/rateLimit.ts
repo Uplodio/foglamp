@@ -22,6 +22,9 @@ const PLAN_CREATE_LIMIT = Math.max(1, env.SETUP_PLAN_CREATE_PER_HOUR);
 // A 30-minute wait at a ~9s hold is ~200 polls; the ceiling allows a couple of
 // full waits per key per hour while still bounding a runaway loop.
 const PLAN_POLL_LIMIT = Math.max(1, env.SETUP_PLAN_POLL_PER_HOUR);
+// MCP requests per key (mcp.ts): a debugging agent makes a few per minute,
+// so this bounds a runaway loop without getting in the way of real use.
+const MCP_LIMIT = Math.max(1, env.MCP_CALLS_PER_HOUR);
 
 const redis = env.REDIS_URL ? new RedisClient(env.REDIS_URL) : null;
 
@@ -53,6 +56,11 @@ export function checkPlanCreateRateLimit(apiKeyId: string): Promise<RateLimitRes
 /** Count one status poll against the API key that sent it. */
 export function checkPlanPollRateLimit(apiKeyId: string): Promise<RateLimitResult> {
   return check("planPoll", apiKeyId, PLAN_POLL_LIMIT);
+}
+
+/** Count one MCP request (tool call or listing) against the API key that sent it. */
+export function checkMcpRateLimit(apiKeyId: string): Promise<RateLimitResult> {
+  return check("mcp", apiKeyId, MCP_LIMIT);
 }
 
 async function checkRedis(

@@ -25,7 +25,12 @@ import {
   getTimeseries,
 } from "@foglamp/api/services/metrics";
 import { getSessionDetail, getSessionList } from "@foglamp/api/services/sessions";
-import { getTraceDetail, getTraceList } from "@foglamp/api/services/traces";
+import {
+  getMetadataKeys,
+  getMetadataValues,
+  getTraceDetail,
+  getTraceList,
+} from "@foglamp/api/services/traces";
 import { getWorkflowList } from "@foglamp/api/services/workflowRuns";
 
 // Tools are bound to one authenticated user + project. Every wrapped service
@@ -293,7 +298,7 @@ export function buildFoggyTools({
 
     listTraces: tool({
       description:
-        "List traces (one trace = one top-level generateText/streamText call) in a window. Newest first by default; filter by agent name, trace name, or errors-only, and sort/paginate. Each row includes a `link` to open it in the dashboard.",
+        "List traces (one trace = one top-level generateText/streamText call) in a window. Newest first by default; filter by agent name, trace name, workflow, customer, model, errors-only, or a metadata key/value (see listMetadataKeys), and sort/paginate. Each row includes a `link` to open it in the dashboard.",
       inputSchema: z.object({
         ...windowInput,
         agentName: z
@@ -308,6 +313,28 @@ export function buildFoggyTools({
           .boolean()
           .optional()
           .describe("Only traces that had at least one error."),
+        workflowName: z
+          .string()
+          .optional()
+          .describe("Only traces that ran inside this workflow (exact match)."),
+        customerId: z
+          .string()
+          .optional()
+          .describe("Only traces attributed to this customer id (exact match)."),
+        modelId: z
+          .string()
+          .optional()
+          .describe("Only traces that called this model id (exact match)."),
+        metadataKey: z
+          .string()
+          .optional()
+          .describe(
+            "A metadata key (see listMetadataKeys). With metadataValue it filters; alone it only adds that key's value to each row as `metadataValue`.",
+          ),
+        metadataValue: z
+          .string()
+          .optional()
+          .describe("With metadataKey: only traces whose metadata[key] equals this value."),
         sort: z
           .object({
             field: z.enum(["when", "cost", "duration", "tokens", "spans"]),
@@ -323,7 +350,21 @@ export function buildFoggyTools({
           .optional()
           .describe("Rows to skip, for paging. Default 0."),
       }),
-      execute: async ({ from, to, agentName, traceName, errorsOnly, sort, limit, offset }) => {
+      execute: async ({
+        from,
+        to,
+        agentName,
+        traceName,
+        errorsOnly,
+        workflowName,
+        customerId,
+        modelId,
+        metadataKey,
+        metadataValue,
+        sort,
+        limit,
+        offset,
+      }) => {
         const w = resolveWindow(from, to);
         const { traces } = await getTraceList(db, ch, userId, {
           projectId,
@@ -331,6 +372,11 @@ export function buildFoggyTools({
           agentName,
           traceName,
           errorsOnly,
+          workflowName,
+          customerId,
+          modelId,
+          metadataKey,
+          metadataValue,
           sort,
           limit: limit ?? 15,
           offset,
@@ -345,8 +391,42 @@ export function buildFoggyTools({
           errorCount: t.errorCount,
           totalTokens: t.totalTokens,
           totalCost: t.totalCost,
+          models: t.models,
+          // Only populated when metadataKey was given (customer-supplied value).
+          metadataValue: untrusted(t.metadataValue),
           link: `/traces/${encodeURIComponent(t.traceId)}`,
         }));
+      },
+    }),
+
+    listMetadataKeys: tool({
+      description:
+        "Distinct metadata keys seen on this project's traces in a window, most frequent first — what the app attached to its calls (ids, channels, …). Use to find out what listTraces can filter on via metadataKey/metadataValue.",
+      inputSchema: z.object(windowInput),
+      execute: async ({ from, to }) => {
+        const w = resolveWindow(from, to);
+        // Keys are chosen by the instrumenting developer (the dashboard's own
+        // user), not end users, so they go back unwrapped; values don't.
+        const keys = await getMetadataKeys(db, ch, userId, { projectId, ...w });
+        return { keys };
+      },
+    }),
+
+    listMetadataValues: tool({
+      description:
+        "Top values of one metadata key in a window, most frequent first (capped; `truncated` means more exist). Use to find the exact value to pass to listTraces as metadataValue.",
+      inputSchema: z.object({
+        ...windowInput,
+        key: z.string().describe("The metadata key (from listMetadataKeys)."),
+      }),
+      execute: async ({ from, to, key }) => {
+        const w = resolveWindow(from, to);
+        const { values, truncated } = await getMetadataValues(db, ch, userId, {
+          projectId,
+          key,
+          ...w,
+        });
+        return { key, values: values.map((v) => untrusted(v)), truncated };
       },
     }),
 
@@ -379,7 +459,32 @@ export function buildFoggyTools({
           cacheWriteCost: s.cacheWriteCost,
           totalCost: s.totalCost,
         }));
-        return { traceId, link: `/traces/${encodeURIComponent(traceId)}`, spans };
+        // Trace-level context so the trace can be tied back to its session,
+        // workflow, customer and the app's own ids without a second call. The
+        // integration's metadata is the same on every span of a trace, so the
+        // first span carrying any is representative.
+        const metadataSource = detail.spans.find(
+          (s) => Object.keys(s.metadata ?? {}).length > 0,
+        );
+        const metadata = Object.fromEntries(
+          Object.entries(metadataSource?.metadata ?? {}).map(([k, v]) => [
+            k,
+            untrusted(String(v)),
+          ]),
+        );
+        return {
+          traceId,
+          link: `/traces/${encodeURIComponent(traceId)}`,
+          traceName: untrusted(detail.traceName),
+          agentName: untrusted(detail.agentName),
+          workflowName: untrusted(detail.workflowName),
+          workflowRunId: untrusted(detail.workflowRunId),
+          sessionId: detail.sessionId,
+          customerId: detail.customer?.id ?? null,
+          metadata,
+          spanCount: detail.spans.length,
+          spans,
+        };
       },
     }),
 

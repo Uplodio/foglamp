@@ -19,7 +19,8 @@ export type AppEnv = {
 // lookup they never read. `/instrumentation-plans/` is API-key authed and gets
 // long-polled every few seconds during onboarding, so this is the difference
 // between one auth query per wait and hundreds.
-const SKIP_IDENTIFY_PREFIXES = ["/api/auth/", "/instrumentation-plans"];
+// `/mcp` is API-key authed as well (mcp.ts), one request per tool call.
+const SKIP_IDENTIFY_PREFIXES = ["/api/auth/", "/instrumentation-plans", "/mcp"];
 
 export const evlog = createMiddleware<AppEnv>(async (c, next) => {
   const log = createRequestLogger({

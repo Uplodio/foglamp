@@ -61,6 +61,9 @@ const serverSchema = {
   // Status polls per API key per hour. The waiting agent long-polls every ~9s,
   // so this budget is far larger than the create one on purpose.
   SETUP_PLAN_POLL_PER_HOUR: z.coerce.number().default(600),
+  // MCP requests (tool calls, listings) per API key per hour — the /mcp
+  // endpoint a coding agent uses to read traces while debugging.
+  MCP_CALLS_PER_HOUR: z.coerce.number().default(600),
   // How often to check for due 1, 3, and 7 day onboarding notes.
   ONBOARDING_EMAIL_INTERVAL_MS: z.coerce.number().default(3_600_000),
 

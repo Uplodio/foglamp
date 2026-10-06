@@ -19,6 +19,7 @@
     "@foglamp/db": "workspace:*",
     "@foglamp/env": "workspace:*",
     "@hono/trpc-server": "^0.4.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@trpc/server": "catalog:",
     "ai": "catalog:",
     "better-auth": "catalog:",

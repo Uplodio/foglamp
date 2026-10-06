@@ -225,6 +225,27 @@ seeded email + password admin; magic-link and alert emails simply stay off.
 > baked into the web image at build time — rebuild the `web` target if you serve
 > it from a domain other than `localhost`.
 
+### MCP server (Claude Code, Cursor, …)
+
+The server exposes Foggy's read-only tool set over MCP at `/mcp`, so your own
+coding agent can pull traces, sessions and metrics while it debugs your app.
+It authenticates with the project's `FOGLAMP_API_KEY` (the key the SDK already
+sends), which scopes the connection to that one project.
+
+```bash
+claude mcp add --transport http foglamp https://<server-host>/mcp \
+  --header "Authorization: Bearer $FOGLAMP_API_KEY"
+```
+
+Tools: `listTraces` (filter by agent, trace name, workflow, customer, model,
+errors, or a metadata key/value), `listMetadataKeys` / `listMetadataValues`,
+`getTrace`, `getTraceIO`, `listSessions`, `getSession`, `getProjectSummary`,
+`getTimeseries`, `breakdownByModel`, `getCostTimeseriesByModel`,
+`getModelPricing`, `listAgents`, `listWorkflows`, `listCustomers`, `listEvals`,
+`getEvalScores`, `listAlerts`, `getAlertHistory`. Requests are rate limited per
+key (`MCP_CALLS_PER_HOUR`, default 600). The endpoint is stateless (plain JSON
+replies, no SSE session), so it sits happily behind any proxy or replica set.
+
 ---
 
 ## Environment variables

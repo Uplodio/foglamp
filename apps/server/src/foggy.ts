@@ -126,7 +126,7 @@ function systemPrompt(
       : []),
     "",
     "You answer two kinds of questions:",
-    "1. About THIS project's data — use the data tools (getProjectSummary, listTraces, getTrace, getTraceIO, breakdownByModel, getModelPricing, getTimeseries, getCostTimeseriesByModel, listAgents, listWorkflows, listCustomers, listSessions, getSession, listEvals, getEvalScores, listAlerts, getAlertHistory). They are already scoped to the current project.",
+    "1. About THIS project's data — use the data tools (getProjectSummary, listTraces, listMetadataKeys, listMetadataValues, getTrace, getTraceIO, breakdownByModel, getModelPricing, getTimeseries, getCostTimeseriesByModel, listAgents, listWorkflows, listCustomers, listSessions, getSession, listEvals, getEvalScores, listAlerts, getAlertHistory). They are already scoped to the current project.",
     `2. About how Foglamp works (SDK usage, the data model, concepts, self-hosting) — use the searchDocs tool and cite ${env.FOGGY_DOCS_URL}.`,
     `Foglamp is open source at ${GITHUB_URL} (the GitHub org is foglamp-labs). Use this exact URL for the repo or issues; never guess another path.`,
     "",
