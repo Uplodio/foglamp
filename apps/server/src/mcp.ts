@@ -72,11 +72,14 @@ export async function handleMcp(c: Context<AppEnv>): Promise<Response> {
     { name: "foglamp", version: MCP_SERVER_VERSION },
     { instructions: INSTRUCTIONS },
   );
-  registerToolSet(
-    server,
-    buildFoggyTools({ ch, userId: key.ownerUserId, projectId: key.projectId }),
-    { appOrigin: env.CORS_ORIGIN },
-  );
+  // Everything but the docs search: it only proxies the public docs site, and
+  // a coding agent reads docs on its own. This endpoint is the project's data.
+  const { searchDocs: _docs, ...tools } = buildFoggyTools({
+    ch,
+    userId: key.ownerUserId,
+    projectId: key.projectId,
+  });
+  registerToolSet(server, tools, { appOrigin: env.CORS_ORIGIN });
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,
