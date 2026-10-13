@@ -3131,3 +3131,64 @@ export async function queryPlatformErrorsByDay(
 		{ from },
 	);
 }
+
+export type TraceRootContentRow = {
+	trace_id: string;
+	name: string;
+	start_time: string;
+	end_time: string;
+	status: string;
+	input: string;
+	output: string;
+};
+
+/**
+ * The root `agent` span's content (input + output) for each requested trace —
+ * `getSessionTurns` for an arbitrary id list instead of one session. Feeds the
+ * metadata timeline, whose runs are grouped in the API rather than by a
+ * single session/workflow column. Same `LIMIT 1 BY trace_id` collapse:
+ * earliest agent span wins, so sub-agent spans never shadow the root.
+ */
+export function getTraceRootContents(
+	client: ClickHouseClient,
+	params: { projectId: string; traceIds: string[] },
+): Promise<TraceRootContentRow[]> {
+	if (params.traceIds.length === 0) return Promise.resolve([]);
+	return rows<TraceRootContentRow>(
+		client,
+		`SELECT trace_id, name, start_time, end_time, status, input, output
+     FROM spans FINAL
+     WHERE project_id = {projectId:String}
+       AND trace_id IN {ids:Array(String)}
+       AND span_type = 'agent'
+     ORDER BY start_time ASC, span_id ASC
+     LIMIT 1 BY trace_id`,
+		{ projectId: params.projectId, ids: params.traceIds },
+	);
+}
+
+/**
+ * Tool usage per trace for an id list: one row per (trace, tool name) in
+ * first-call order — `getSessionToolCalls` without the session constraint.
+ */
+export function getTraceToolCalls(
+	client: ClickHouseClient,
+	params: { projectId: string; traceIds: string[] },
+): Promise<SessionToolCallRow[]> {
+	if (params.traceIds.length === 0) return Promise.resolve([]);
+	return rows<SessionToolCallRow>(
+		client,
+		`SELECT
+       trace_id, name,
+       count() AS call_count,
+       countIf(status = 'error') AS error_count,
+       sum(duration_ms) AS total_duration_ms
+     FROM spans FINAL
+     WHERE project_id = {projectId:String}
+       AND trace_id IN {ids:Array(String)}
+       AND span_type = 'tool'
+     GROUP BY trace_id, name
+     ORDER BY min(start_time) ASC`,
+		{ projectId: params.projectId, ids: params.traceIds },
+	);
+}

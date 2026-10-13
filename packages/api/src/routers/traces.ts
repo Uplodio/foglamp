@@ -10,6 +10,7 @@ import {
   getTraceDetail,
   getTraceList,
 } from "../services/traces";
+import { getMetadataTimeline } from "../services/timeline";
 
 export const tracesRouter = router({
   list: protectedProcedure
@@ -72,6 +73,30 @@ export const tracesRouter = router({
     .query(({ ctx, input }) =>
       getSessionNeighbors(ctx.db, ctx.ch, ctx.session.user.id, input),
     ),
+
+  // Every trace carrying metadata[key] = value in the window, folded into runs
+  // (session, else workflow run, else lone trace) and told oldest first — the
+  // "what happened to X" page behind the Traces metadata filter.
+  timeline: protectedProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        key: z.string().min(1),
+        value: z.string().min(1),
+        from: z.coerce.date().optional(),
+        to: z.coerce.date().optional(),
+      }),
+    )
+    .query(({ ctx, input }) => {
+      const { from, to } = resolveRange(input.from, input.to);
+      return getMetadataTimeline(ctx.db, ctx.ch, ctx.session.user.id, {
+        projectId: input.projectId,
+        key: input.key,
+        value: input.value,
+        from,
+        to,
+      });
+    }),
 
   // Distinct metadata keys in a window — the metadata filter's key picker.
   metadataKeys: protectedProcedure

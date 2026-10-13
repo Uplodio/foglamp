@@ -33,6 +33,7 @@ import {
   IconSitemapFilled,
 } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
+import type { Route } from "next";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -2545,9 +2546,15 @@ function SpanDetail({
                         <span className="min-w-4 flex-1 overflow-hidden whitespace-nowrap text-muted-foreground/20 mx-1">
                           {".".repeat(300)}
                         </span>
-                        <span className="min-w-0 truncate" title={v}>
+                        <Link
+                          href={
+                            `/timeline?key=${encodeURIComponent(k)}&value=${encodeURIComponent(v)}` as Route
+                          }
+                          className="min-w-0 truncate underline-offset-2 transition-colors hover:text-foreground hover:underline"
+                          title={`Timeline of ${k}: ${v}`}
+                        >
                           {v}
-                        </span>
+                        </Link>
                       </div>
                     ))}
                   </div>

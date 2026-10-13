@@ -1,6 +1,6 @@
 "use client";
 
-import { Button } from "@foglamp/ui/components/button";
+import { Button, buttonVariants } from "@foglamp/ui/components/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,6 +23,7 @@ import {
   IconCpu,
   IconFilter2,
   IconGhost,
+  IconHistory,
   IconMessage2Filled,
   IconPlayerStopFilled,
   IconSitemap,
@@ -34,6 +35,7 @@ import {
   IconFileHorizontalFilled,
 } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
+import type { Route } from "next";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -600,6 +602,21 @@ export function TracesClient() {
               canPrompt={canPrompt}
               onAdd={addFilter}
             />
+          )}
+          {metaKeyFilter && metaValueFilter && (
+            <Link
+              href={
+                `/timeline?key=${encodeURIComponent(metaKeyFilter)}&value=${encodeURIComponent(metaValueFilter)}` as Route
+              }
+              className={cn(
+                buttonVariants({ variant: "outline" }),
+                "text-muted-foreground gap-1 bg-card hover:bg-muted/50 dark:hover:bg-muted"
+              )}
+              title={`Timeline of ${metaKeyFilter}: ${metaValueFilter}`}
+            >
+              <IconHistory />
+              Timeline
+            </Link>
           )}
           <ClearFiltersButton
             show={hasFilters}
