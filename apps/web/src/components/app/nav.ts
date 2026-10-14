@@ -18,6 +18,8 @@ import {
   IconSettingsFilled,
   IconSitemap,
   IconSitemapFilled,
+  IconTimelineEvent,
+  IconTimelineEventFilled,
 } from "@tabler/icons-react";
 import type { Route } from "next";
 
@@ -74,6 +76,14 @@ export const nav: NavItem[] = [
     activeIcon: IconAffiliateFilled,
     iconClassName:
       "bg-[#ede0d4] dark:bg-[#2e211b] rounded-[5px] squircle:rounded-xl p-0.5 corner-squircle text-[#8b5e34] dark:text-[#c9a888] shadow-[inset_0_0_0_1px_rgba(139,94,52,0.14),0_2px_6px_-2px_rgba(139,94,52,0.25)] dark:shadow-(--custom-shadow)",
+  },
+  {
+    href: "/timeline",
+    label: "Timeline",
+    icon: IconTimelineEvent,
+    activeIcon: IconTimelineEventFilled,
+    iconClassName:
+      "bg-violet-100 dark:bg-violet-950 rounded-[5px] squircle:rounded-xl p-0.5 corner-squircle text-violet-500 shadow-[inset_0_0_0_1px_rgba(139,92,246,0.14),0_2px_6px_-2px_rgba(139,92,246,0.25)] dark:shadow-(--custom-shadow)",
   },
   {
     href: "/evals",

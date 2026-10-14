@@ -107,6 +107,10 @@ const routePrefetch: Partial<Record<Route, (ctx: PrefetchCtx) => void>> = {
 		warm(trpc.customers.list.queryOptions(args));
 		warm(trpc.metrics.models.queryOptions(args));
 	},
+	"/timeline": ({ projectId, from, to }) => {
+		// The key picker; the story itself waits for a pasted value.
+		warm(trpc.traces.metadataKeys.queryOptions({ projectId, from, to }));
+	},
 	"/evals": ({ projectId, from, to }) => {
 		warm(trpc.evals.list.queryOptions({ projectId, from, to }));
 		warm(trpc.evals.presets.queryOptions());

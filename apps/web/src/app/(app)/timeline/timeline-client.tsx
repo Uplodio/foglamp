@@ -3,6 +3,12 @@
 import { Badge } from "@foglamp/ui/components/badge";
 import { Button } from "@foglamp/ui/components/button";
 import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from "@foglamp/ui/components/input-group";
+import {
   Table,
   TableBody,
   TableCell,
@@ -15,13 +21,16 @@ import {
   IconAffiliateFilled,
   IconAlertTriangle,
   IconAlertTriangleFilled,
+  IconArrowRight,
   IconArrowUpRight,
   IconBoltFilled,
   IconCoinFilled,
-  IconHistory,
   IconSitemapFilled,
+  IconTag,
   IconTagFilled,
+  IconTimelineEvent,
   IconTool,
+  IconX,
 } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
 import type { Route } from "next";
@@ -34,7 +43,7 @@ import { DRAWER_BUTTON_CLASS } from "@/components/app/button-styles";
 import { Chip, ContextChip } from "@/components/app/context-chip";
 import { CopyButton } from "@/components/app/copy-button";
 import { CustomerAvatar } from "@/components/app/customer-avatar";
-import { useUrlFilters } from "@/components/app/data-table";
+import { FilterSelect, Toolbar, useUrlFilters } from "@/components/app/data-table";
 import { HeatCell } from "@/components/app/heat-cell";
 import {
   useDelayedLoading,
@@ -78,6 +87,7 @@ import {
   formatTokens,
 } from "@/lib/format";
 import { type RouterOutputs, trpc } from "@/utils/trpc";
+import { TimelineHeader } from "./header";
 
 type Timeline = RouterOutputs["traces"]["timeline"];
 type Run = Timeline["runs"][number];
@@ -91,6 +101,31 @@ const SKELETON_COLS: readonly SkeletonCol[] = [
   { align: "right", w: "w-16" },
   { align: "right", w: "w-16" },
 ] as const;
+
+// Metadata-key option identity — the fuchsia tag the traces list uses for
+// metadata values, so the picker reads as the same thing.
+const MetaKeyIcon = (p: { className?: string }) => (
+  <IconTagFilled className={cn(p.className, "text-fuchsia-500")} />
+);
+
+// The last key the person followed, so the picker opens where they left it.
+// Browser storage is a convenience only: it can be empty or throw (private
+// windows, cleared data), and the URL always wins.
+const LAST_KEY = "foglamp:timeline:key";
+function readLastKey(): string {
+  try {
+    return window.localStorage.getItem(LAST_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+function rememberKey(key: string): void {
+  try {
+    if (key) window.localStorage.setItem(LAST_KEY, key);
+  } catch {
+    /* storage unavailable — the URL still carries the key */
+  }
+}
 
 /** 20/40/60/80th-percentile thresholds of the positive values (sorted-nearest)
  * — the heat shades for a column, computed over this timeline's runs. */
@@ -107,7 +142,8 @@ function quintiles(values: number[]): number[] {
  * "What happened to X": every trace carrying one metadata value, folded into
  * runs (a session, a workflow run, or a lone trace) and told oldest first —
  * the workflow page's runs table, cut across sessions and workflows for one
- * record. Click a run for its overview, its tool steps, and its exchange.
+ * record. Pick the key, paste the value, and click a run for its overview,
+ * its tool steps, and its exchange.
  */
 export function TimelineClient() {
   const entrance = useEntranceOnce();
@@ -115,7 +151,9 @@ export function TimelineClient() {
   const { range, setRange } = useRange();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [params] = useUrlFilters({ key: "", value: "" });
+  // The story's address lives in the URL so it survives reload and can be
+  // shared; `run` is the open drawer (see toggleRun).
+  const [params, patchParams] = useUrlFilters({ key: "", value: "", run: "" });
   const key = params.key;
   const value = params.value;
   const ready = !!key && !!value;
@@ -126,6 +164,29 @@ export function TimelineClient() {
   const [expanded, setExpanded] = useState<string | null>(focusRun);
   const [deepLinked, setDeepLinked] = useState<string | null>(focusRun);
   const focusRef = useRef<HTMLTableRowElement>(null);
+
+  // The key picker's options — every metadata key seen in the window.
+  const metaKeys = useQuery({
+    ...trpc.traces.metadataKeys.queryOptions({
+      projectId: projectId!,
+      from: range.from.toISOString(),
+      to: range.to.toISOString(),
+    }),
+    enabled: !!projectId,
+    placeholderData: (prev) => prev,
+  });
+  const metaKeyOptions = (metaKeys.data ?? []).map((k) => ({
+    value: k,
+    label: k,
+    icon: MetaKeyIcon,
+  }));
+  // No key in the URL: open on the one last followed, else the commonest.
+  useEffect(() => {
+    if (key || !metaKeys.data?.length) return;
+    const last = readLastKey();
+    const pick = metaKeys.data.includes(last) ? last : metaKeys.data[0];
+    if (pick) patchParams({ key: pick });
+  }, [key, metaKeys.data, patchParams]);
 
   const timeline = useQuery({
     ...trpc.traces.timeline.queryOptions({
@@ -179,26 +240,34 @@ export function TimelineClient() {
   const costQuantiles = quintiles(runs.map((r) => r.totalCost));
   const durationQuantiles = quintiles(runs.map((r) => r.durationMs));
 
-  const tracesNav = navItem("/traces");
-  const back: PageHeaderBack | undefined = tracesNav
-    ? {
-        ...tracesNav,
-        href: (ready
-          ? `/traces?metaKey=${encodeURIComponent(key)}&metaValue=${encodeURIComponent(value)}`
-          : tracesNav.href) as Route,
-      }
+  // Follow a value: a new story, with any open drawer left behind.
+  const follow = (next: string) => {
+    const v = next.trim();
+    if (!v || !key) return;
+    rememberKey(key);
+    setExpanded(null);
+    setDeepLinked(null);
+    patchParams({ value: v, run: "" });
+  };
+
+  const section = navItem("/timeline");
+  const back: PageHeaderBack | undefined = section
+    ? { ...section, href: `/timeline?key=${encodeURIComponent(key)}` as Route }
     : undefined;
 
+  // Landing: the section header. Loaded: the value as the title with a crumb
+  // back to the landing, like a session page.
   const header = (
     <div className={cn(entrance && "page-fade-in")}>
-      <PageHeader
-        title={ready ? value : "Timeline"}
-        back={back}
-        titleTrailing={
-          ready ? <CopyButton value={value} title="Copy value" /> : undefined
-        }
-        actions={<RangeControl value={range} onChange={setRange} />}
-      />
+      {ready ? (
+        <PageHeader
+          title={value}
+          back={back}
+          titleTrailing={<CopyButton value={value} title="Copy value" />}
+        />
+      ) : (
+        <TimelineHeader />
+      )}
     </div>
   );
 
@@ -211,15 +280,48 @@ export function TimelineClient() {
     );
   }
 
+  // The toolbar always renders so the key, the paste box and the range stay
+  // reachable — an empty range needs the range picker to escape.
+  const toolbar = (
+    <div className={cn("mt-1 flex flex-col gap-4", entrance && "page-fade-in")}>
+      <Toolbar trailing={<RangeControl value={range} onChange={setRange} />}>
+        <FilterSelect
+          value={key}
+          onChange={(v) => {
+            rememberKey(v);
+            setExpanded(null);
+            setDeepLinked(null);
+            patchParams({ key: v, value: "", run: "" });
+          }}
+          allLabel="Metadata key"
+          icon={IconTag}
+          options={metaKeyOptions}
+        />
+        <ValueInput
+          key={key}
+          disabled={!key}
+          placeholder={key ? `Paste a ${key} and press Enter` : "Pick a key first"}
+          initial={value}
+          onSubmit={follow}
+        />
+      </Toolbar>
+    </div>
+  );
+
   if (!ready) {
     return (
       <>
         {header}
+        {toolbar}
         <div className={cn("px-8", entrance && "page-fade-in")}>
           <EmptyState
-            icon={IconHistory}
-            title="Pick a metadata value"
-            description="Open Traces, filter by a metadata key and value, then press Timeline."
+            icon={IconTimelineEvent}
+            title="Follow one value through every run"
+            description={
+              key
+                ? `Paste a ${key} above and press Enter to see every run that touched it, oldest first.`
+                : "Pick a metadata key above, then paste a value to see every run that touched it, oldest first."
+            }
           />
         </div>
       </>
@@ -302,14 +404,15 @@ export function TimelineClient() {
   return (
     <>
       {header}
+      {toolbar}
 
-      {/* Context chips: the key this value lives under (back to the filtered
+      {/* Context chips: the key this value lives under (to the filtered
           traces list), the customer it belongs to, and the agents that
           touched it — the same linked-entity pills as the session page. */}
       {(data?.customer || (data?.runs.length ?? 0) > 0) && (
         <div
           className={cn(
-            "mt-1 flex flex-wrap items-center gap-2 px-6 text-xs",
+            "flex flex-wrap items-center gap-2 px-6 text-xs",
             entrance && !skeletonShown && "page-fade-in",
           )}
         >
@@ -350,7 +453,7 @@ export function TimelineClient() {
       {noRuns ? (
         <div className={cn(entrance && "page-fade-in", "px-8")}>
           <EmptyState
-            icon={IconHistory}
+            icon={IconTimelineEvent}
             title="No traces in this range"
             description={`Nothing carries ${key} = ${value} in the selected window — try widening the time range.`}
           />
@@ -360,7 +463,7 @@ export function TimelineClient() {
           {/* Stat strip — totals over every run in the window. */}
           <section
             className={cn(
-              "mt-1 grid grid-cols-2 gap-4 px-8 md:grid-cols-4",
+              "grid grid-cols-2 gap-4 px-8 md:grid-cols-4",
               entrance && "page-fade-in",
             )}
           >
@@ -427,8 +530,8 @@ export function TimelineClient() {
             )}
           >
             {/* pr-11 (not the default pr-9): the range picker lives in the
-                page header here (px-8) rather than a toolbar (pr-6), so the
-                last column needs 8px more to line up with its chevron the way
+                toolbar's trailing group, which lifts into the header when
+                space is tight, so the last column lines up with it the way
                 the list pages do. */}
             <Table
               className="table-fixed [&_th:last-child]:pr-11 [&_td:last-child]:pr-11"
@@ -457,6 +560,86 @@ export function TimelineClient() {
         </>
       )}
     </>
+  );
+}
+
+/** The paste box: a value typed or pasted here opens its timeline on Enter,
+ * on the arrow button, or straight away on paste (an id pasted from the
+ * dashboard is the whole input). Styled as the Traces search pill so it
+ * sits next to the key picker as one toolbar. Remounted per key (`key=`),
+ * so switching keys clears a half-typed value. */
+function ValueInput({
+  initial,
+  placeholder,
+  disabled,
+  onSubmit,
+}: {
+  initial: string;
+  placeholder: string;
+  disabled: boolean;
+  onSubmit: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState(initial);
+  // A story opened elsewhere (a Traces "Timeline" button, a back navigation)
+  // lands in the box too.
+  useEffect(() => setDraft(initial), [initial]);
+  const submit = () => onSubmit(draft);
+  return (
+    <InputGroup
+      className={cn(
+        // Same surface as SearchInput: the outline-Button look, pill-shaped.
+        "h-8 w-80 rounded-full squircle:rounded-full corner-round! shadow-(--custom-outline-shadow) dark:shadow-(--custom-outline-shadow) dark:border-0 bg-card dark:bg-card hover:bg-muted/50 dark:hover:bg-muted",
+        disabled && "opacity-60",
+      )}
+    >
+      <InputGroupAddon>
+        <IconTag className="size-3.5 dark:text-[#5B5B5B] text-[#B8B8B8]" />
+      </InputGroupAddon>
+      <InputGroupInput
+        value={draft}
+        disabled={disabled}
+        placeholder={placeholder}
+        spellCheck={false}
+        autoComplete="off"
+        className="h-8 font-mono text-xs"
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            submit();
+          }
+        }}
+        onPaste={(e) => {
+          const text = e.clipboardData.getData("text").trim();
+          if (!text || text.includes("\n")) return;
+          e.preventDefault();
+          setDraft(text);
+          onSubmit(text);
+        }}
+      />
+      {draft && (
+        <InputGroupAddon align="inline-end">
+          <InputGroupButton
+            size="icon-xs"
+            aria-label="Clear value"
+            onClick={() => setDraft("")}
+            className="rounded-full text-muted-foreground/60 hover:text-foreground"
+          >
+            <IconX className="size-3.5" />
+          </InputGroupButton>
+          <InputGroupButton
+            size="icon-xs"
+            aria-label="Open timeline"
+            title="Open timeline (Enter)"
+            disabled={disabled || draft.trim() === initial}
+            onClick={submit}
+            className="rounded-full text-muted-foreground/60 hover:text-foreground"
+          >
+            <IconArrowRight className="size-3.5" />
+          </InputGroupButton>
+        </InputGroupAddon>
+      )}
+    </InputGroup>
   );
 }
 
