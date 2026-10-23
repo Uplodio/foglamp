@@ -102,8 +102,16 @@ export async function runMigrations(
  */
 export async function applySpansRetention(
   client: ClickHouseClient,
+  /** Optional upper bound in days (RETENTION_DAYS_CAP). Applied in the TTL
+   * itself, so rows stamped with a longer retention before the cap existed
+   * expire on it too. */
+  capDays?: number,
 ): Promise<void> {
+  const days =
+    capDays !== undefined && Number.isInteger(capDays) && capDays > 0
+      ? `least(retention_days, ${Math.min(capDays, 65535)})`
+      : "retention_days";
   await client.command({
-    query: `ALTER TABLE spans MODIFY TTL toDateTime(start_time) + toIntervalDay(retention_days)`,
+    query: `ALTER TABLE spans MODIFY TTL toDateTime(start_time) + toIntervalDay(${days})`,
   });
 }

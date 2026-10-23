@@ -106,6 +106,10 @@ const serverSchema = {
   PROMPT_VERSION_INTERVAL_MS: z.coerce.number().default(60_000),
 
   // --- Billing (Stripe; org-scoped). Plugin enabled only when the secret is set. ---
+  // Upper bound on every span's retention, in days (self-host: unmetered orgs
+  // otherwise keep spans ~10 years). Stamped at ingest and applied as a cap in
+  // the spans TTL on boot, so rows already stored expire on it too. Unset = no cap.
+  RETENTION_DAYS_CAP: z.coerce.number().int().min(1).max(65535).optional(),
   STRIPE_SECRET_KEY: z.string().min(1).optional(),
   STRIPE_WEBHOOK_SECRET: z.string().min(1).optional(),
   STRIPE_PRICE_ID_PRO_MONTHLY: z.string().optional(),

@@ -10,7 +10,7 @@
 // host is a subdomain of it — api.foglamp.uplodio.com under foglamp.uplodio.com.
 // The app services build from the fork's Dockerfile; RAILWAY_TARGET picks the stage
 // (see the "railway" stages at the end of ../Dockerfile).
-import { defineRailway, github, image, postgres, preserve, project, service, volume } from "railway/iac";
+import { defineRailway, github, postgres, preserve, project, service, volume } from "railway/iac";
 
 const REPO = "Uplodio/foglamp";
 const BRANCH = "railway";
@@ -25,12 +25,17 @@ export default defineRailway(() => {
 
   // Span store. Private network only (no domain); the image listens on IPv6.
   const clickhouse = service("clickhouse", {
-    source: image("clickhouse/clickhouse-server:24.8-alpine"),
+    // The stock 24.8 image plus clickhouse/config.d + users.d (low-memory config:
+    // no unread internal log tables, small caches, pools sized for 2 vCPU) — see
+    // clickhouse/Dockerfile. Railway bills held memory; the defaults were the bill.
+    source: github(REPO, { branch: BRANCH }),
+    build: { builder: "DOCKERFILE" as const, dockerfilePath: "clickhouse/Dockerfile" },
     // ClickHouse sizes its thread pools and per-query max_threads from the container's
     // CPU limit. Unlimited (24 vCPU here) made one dashboard page load — nine parallel
     // queries — exhaust the container's thread budget (CANNOT_SCHEDULE_TASK, code 439).
-    // 2 vCPU / 4 GB is plenty for this span volume and keeps the pools small.
-    deploy: { limitOverride: { containers: { cpu: 2, memoryBytes: 4 * 1024 * 1024 * 1024 } } },
+    // 2 vCPU / 2 GB: with the low-memory config the server stays well under 1 GB, and
+    // max_server_memory_usage_to_ram_ratio (0.75) fails a runaway query at ~1.5 GB.
+    deploy: { limitOverride: { containers: { cpu: 2, memoryBytes: 2 * 1024 * 1024 * 1024 } } },
     env: {
       CLICKHOUSE_DB: "foglamp",
       CLICKHOUSE_USER: "default",
@@ -53,6 +58,9 @@ export default defineRailway(() => {
     CLICKHOUSE_USER: "default",
     CLICKHOUSE_PASSWORD: "${{clickhouse.CLICKHOUSE_PASSWORD}}",
     CLICKHOUSE_DATABASE: "foglamp",
+    // Span retention: ~6 months, then ClickHouse deletes them. Stamped at ingest and
+    // applied as a cap in the spans TTL on boot, so it covers stored rows too.
+    RETENTION_DAYS_CAP: "183",
     // Email is optional (password login works without it); empty mirrors docker-compose.
     RESEND_API_KEY: "",
     RESEND_FROM_EMAIL: "",
@@ -73,6 +81,8 @@ export default defineRailway(() => {
       FOGLAMP_SECRETS_KEY: preserve(),
       ADMIN_EMAIL: preserve(),
       ADMIN_PASSWORD: preserve(),
+      // Foggy's model key (OpenAI, gpt-6-luna) — set by hand, never re-applied.
+      OPENAI_API_KEY: preserve(),
     },
   });
 

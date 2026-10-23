@@ -1,6 +1,7 @@
 import { getOrgPlan, type PlanLimits } from "@foglamp/billing";
 import type { ClickHouseClient } from "@foglamp/clickhouse";
 import { queryOrgSpanUsage } from "@foglamp/clickhouse";
+import { env } from "@foglamp/env/server";
 
 // Per-org plan + usage on the ingest hot path, behind short-TTL in-memory caches
 // (mirrors the API-key + custom-pricing caches). A little staleness is fine: the
@@ -83,6 +84,7 @@ export async function checkOrgQuota(
   // already-expired TTL and ClickHouse would delete them on the next merge.
   const retentionDays = Math.min(
     Math.max(1, plan.limits.retentionDays ?? UNLIMITED_RETENTION),
+    env.RETENTION_DAYS_CAP ?? 65535,
     65535,
   );
   const limit = plan.limits.spansPerMonth;

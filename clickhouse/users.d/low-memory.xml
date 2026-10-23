@@ -1,0 +1,16 @@
+<!--
+  Per-query limits for the default profile. The default user's password is
+  still written by the image entrypoint from CLICKHOUSE_PASSWORD; this file
+  only adds settings to the profile.
+-->
+<clickhouse>
+    <profiles>
+        <default>
+            <!-- One query may use up to 1 GB; past that GROUP BY / ORDER BY
+                 spill to disk instead of growing in memory. -->
+            <max_memory_usage>1000000000</max_memory_usage>
+            <max_bytes_before_external_group_by>400000000</max_bytes_before_external_group_by>
+            <max_bytes_before_external_sort>400000000</max_bytes_before_external_sort>
+        </default>
+    </profiles>
+</clickhouse>

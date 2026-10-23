@@ -9,6 +9,7 @@ import {
   runMigrations,
 } from "@foglamp/clickhouse";
 import { db } from "@foglamp/db";
+import { env } from "@foglamp/env/server";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -26,7 +27,7 @@ const applied = await runMigrations(ch, {
     if (e.phase === "start") console.log(`  • ${e.id} (${e.index + 1}/${e.total})…`);
   },
 });
-await applySpansRetention(ch);
+await applySpansRetention(ch, env.RETENTION_DAYS_CAP);
 await ch.close();
 console.log(
   `✓ ClickHouse ready (${applied.length ? `applied ${applied.join(", ")}` : "already up to date"})`,
