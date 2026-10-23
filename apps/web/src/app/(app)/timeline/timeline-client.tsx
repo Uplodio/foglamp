@@ -2,6 +2,7 @@
 
 import { Badge } from "@foglamp/ui/components/badge";
 import { Button } from "@foglamp/ui/components/button";
+import { Skeleton } from "@foglamp/ui/components/skeleton";
 import {
   InputGroup,
   InputGroupAddon,
@@ -23,6 +24,8 @@ import {
   IconAlertTriangleFilled,
   IconArrowRight,
   IconArrowUpRight,
+  IconChevronDown,
+  IconChevronRight,
   IconBoltFilled,
   IconCoinFilled,
   IconSitemapFilled,
@@ -64,6 +67,7 @@ import {
 import { useProject } from "@/components/app/project-context";
 import { useRange } from "@/components/app/range-context";
 import { RangeControl } from "@/components/app/range-picker";
+import { JsonBlock, Prose } from "@/components/app/payload-view";
 import { RelativeTime } from "@/components/app/relative-time";
 import {
   Conversation,
@@ -687,7 +691,6 @@ function RunDrawer({
   customer: Timeline["customer"];
   colSpan: number;
 }) {
-  const router = useRouter();
   // One node per tool call, in call order across the run's turns — the run's
   // shape (load_case → update_crm → hand_off). NodeFlow folds repeats to ×N.
   const nodes: FlowNode[] = run.turns.flatMap((t) =>
@@ -819,9 +822,9 @@ function RunDrawer({
               <NodeFlow
                 nodes={nodes}
                 onNodeClick={(id) =>
-                  router.push(
-                    `/traces/${encodeURIComponent(id.slice(0, id.indexOf(":")))}`,
-                  )
+                  document
+                    .getElementById(`tool-${id}`)
+                    ?.scrollIntoView({ behavior: "smooth", block: "center" })
                 }
               />
             )}
@@ -841,53 +844,7 @@ function RunDrawer({
             )}
           </DrawerSection>
           <DrawerSection label={`${formatCount(run.turns.length)} ${turnWord}`}>
-            <ol className="flex flex-col gap-1.5">
-              {run.turns.map((t, i) => (
-                <li
-                  key={t.traceId}
-                  className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"
-                >
-                  <Link
-                    href={`/traces/${encodeURIComponent(t.traceId)}`}
-                    className="inline-flex items-center gap-0.5 font-medium text-foreground tabular-nums transition-colors hover:underline underline-offset-2"
-                  >
-                    Turn {i + 1}
-                    <IconArrowUpRight className="size-3" />
-                  </Link>
-                  {t.status === "error" && (
-                    <span className="size-1.5 shrink-0 rounded-full bg-rose-500" />
-                  )}
-                  {t.status === "aborted" && (
-                    <span className="size-1.5 shrink-0 rounded-full bg-amber-500" />
-                  )}
-                  <span>{formatDateTime(t.startTime)}</span>
-                  <span>·</span>
-                  <span className="tabular-nums">{formatSpanDuration(t.durationMs)}</span>
-                  <span>·</span>
-                  <span className="tabular-nums">{formatCost(t.totalCost)}</span>
-                  {t.toolCalls.length > 0 && (
-                    <span className="flex flex-wrap items-center gap-1">
-                      {t.toolCalls.map((tc) => (
-                        <Chip
-                          key={tc.name}
-                          tone={tc.errorCount > 0 ? "error" : "ok"}
-                          icon={
-                            <IconTool
-                              className={cn(
-                                "mb-px size-3 shrink-0 fill-current stroke-1",
-                                tc.errorCount > 0 ? "text-current" : "text-blue-500",
-                              )}
-                            />
-                          }
-                          label={<span className="font-mono">{tc.name}</span>}
-                          trailing={tc.count > 1 ? `×${tc.count}` : undefined}
-                        />
-                      ))}
-                    </span>
-                  )}
-                </li>
-              ))}
-            </ol>
+            <ToolLog run={run} />
           </DrawerSection>
         </div>
       </DrawerColumns>
@@ -906,6 +863,191 @@ function DrawerSection({
     <div className="flex flex-col gap-2">
       <span className="text-xs text-muted-foreground">{label}</span>
       {children}
+    </div>
+  );
+}
+
+type ToolCall = RouterOutputs["traces"]["runToolCalls"][number];
+
+/** A payload as the reader wants it: JSON pretty-printed, prose as markdown.
+ * Tool payloads are serialized JSON almost always; an AI SDK tool output may
+ * wrap the value as {type: "json"|"text", value}. */
+function PayloadBlock({ raw }: { raw: string }) {
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return (
+      <div className="max-h-56 overflow-y-auto rounded-md bg-background/60 p-2">
+        <Prose>{raw}</Prose>
+      </div>
+    );
+  }
+  if (data && typeof data === "object" && "type" in data && "value" in data) {
+    const d = data as { type: unknown; value: unknown };
+    if (d.type === "text" && typeof d.value === "string") {
+      return (
+        <div className="max-h-56 overflow-y-auto rounded-md bg-background/60 p-2">
+          <Prose>{d.value}</Prose>
+        </div>
+      );
+    }
+    if (d.type === "json") data = d.value;
+  }
+  return <JsonBlock data={data} className="rounded-md bg-background/60" />;
+}
+
+/** The run told turn by turn, each tool call inline with its input and output
+ * — no trip to the trace page. Fetched when the drawer opens; calls start
+ * open, a click on the header folds one away. */
+function ToolLog({ run }: { run: Run }) {
+  const { projectId } = useProject();
+  const calls = useQuery({
+    ...trpc.traces.runToolCalls.queryOptions({
+      projectId: projectId!,
+      traceIds: run.turns.map((t) => t.traceId),
+    }),
+    enabled: !!projectId && run.turns.length > 0,
+  });
+  const byTrace = new Map<string, ToolCall[]>();
+  for (const c of calls.data ?? []) {
+    const list = byTrace.get(c.traceId) ?? [];
+    list.push(c);
+    byTrace.set(c.traceId, list);
+  }
+  return (
+    <ol className="flex flex-col gap-4">
+      {run.turns.map((t, i) => {
+        const turnCalls = byTrace.get(t.traceId) ?? [];
+        return (
+          <li key={t.traceId} className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+              <Link
+                href={`/traces/${encodeURIComponent(t.traceId)}`}
+                className="inline-flex items-center gap-0.5 font-medium text-foreground tabular-nums underline-offset-2 transition-colors hover:underline"
+              >
+                Turn {i + 1}
+                <IconArrowUpRight className="size-3" />
+              </Link>
+              {t.status === "error" && (
+                <span className="size-1.5 shrink-0 rounded-full bg-rose-500" />
+              )}
+              {t.status === "aborted" && (
+                <span className="size-1.5 shrink-0 rounded-full bg-amber-500" />
+              )}
+              <span>{formatDateTime(t.startTime)}</span>
+              <span>·</span>
+              <span className="tabular-nums">{formatSpanDuration(t.durationMs)}</span>
+              <span>·</span>
+              <span className="tabular-nums">{formatCost(t.totalCost)}</span>
+            </div>
+            {calls.isLoading ? (
+              t.toolCalls.length > 0 && (
+                <div className="ml-3 flex flex-col gap-2 border-l border-border/60 pl-3">
+                  {t.toolCalls.map((tc) => (
+                    <Skeleton key={tc.name} className="h-7 w-48" />
+                  ))}
+                </div>
+              )
+            ) : turnCalls.length === 0 ? (
+              <p className="ml-3 border-l border-border/60 pl-3 text-xs text-muted-foreground italic">
+                No tool calls — the model answered.
+              </p>
+            ) : (
+              <div className="ml-3 flex flex-col gap-2 border-l border-border/60 pl-3">
+                {turnCalls.map((c) => (
+                  <ToolCallBlock
+                    key={c.spanId}
+                    call={c}
+                    anchor={`tool-${t.traceId}:${c.name}`}
+                  />
+                ))}
+              </div>
+            )}
+          </li>
+        );
+      })}
+      {calls.error && (
+        <li className="text-xs text-muted-foreground">
+          Couldn't load the tool calls: {calls.error.message}
+        </li>
+      )}
+    </ol>
+  );
+}
+
+function ToolCallBlock({ call, anchor }: { call: ToolCall; anchor: string }) {
+  const [open, setOpen] = useState(true);
+  const isError = call.status === "error";
+  return (
+    <div
+      id={anchor}
+      className={cn(
+        "scroll-mt-24 corner-squircle rounded-lg bg-card shadow-(--custom-shadow) dark:bg-muted-foreground/10",
+        isError && "ring-1 ring-rose-500/40",
+      )}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-xs"
+      >
+        {open ? (
+          <IconChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+        ) : (
+          <IconChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+        )}
+        <IconTool
+          className={cn(
+            "mb-px size-3.5 shrink-0 fill-current stroke-1",
+            isError ? "text-rose-500" : "text-blue-500",
+          )}
+        />
+        <span className="font-mono font-medium">{call.name}</span>
+        {isError && (
+          <Badge variant="rose" className="font-sans">
+            <IconAlertTriangle />
+            Error
+          </Badge>
+        )}
+        <span className="ml-auto tabular-nums text-muted-foreground">
+          {formatSpanDuration(call.durationMs)}
+        </span>
+      </button>
+      {open && (
+        <div className="flex flex-col gap-3 px-3 pb-3">
+          {call.errorMessage && (
+            <p className="text-xs text-rose-600 dark:text-rose-400">
+              {call.errorMessage}
+            </p>
+          )}
+          <div className="flex flex-col gap-1">
+            <span className="text-[11px] text-muted-foreground">Input</span>
+            {call.input ? (
+              <PayloadBlock raw={call.input} />
+            ) : (
+              <span className="text-xs text-muted-foreground/60">—</span>
+            )}
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-[11px] text-muted-foreground">Output</span>
+            {call.output ? (
+              <PayloadBlock raw={call.output} />
+            ) : (
+              <span className="text-xs text-muted-foreground/60">—</span>
+            )}
+          </div>
+          {call.truncated && (
+            <Link
+              href={`/traces/${encodeURIComponent(call.traceId)}`}
+              className="inline-flex w-fit items-center gap-0.5 text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            >
+              Payload cut at 16k characters — full version in the trace
+              <IconArrowUpRight className="size-3" />
+            </Link>
+          )}
+        </div>
+      )}
     </div>
   );
 }

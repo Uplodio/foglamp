@@ -10,7 +10,7 @@ import {
   getTraceDetail,
   getTraceList,
 } from "../services/traces";
-import { getMetadataTimeline } from "../services/timeline";
+import { getMetadataTimeline, getRunToolCalls } from "../services/timeline";
 
 export const tracesRouter = router({
   list: protectedProcedure
@@ -97,6 +97,19 @@ export const tracesRouter = router({
         to,
       });
     }),
+
+  // One timeline run's tool calls with their payloads, in call order — the
+  // drawer's inline tool log (lazy: fetched when a run opens).
+  runToolCalls: protectedProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        traceIds: z.array(z.string().min(1)).min(1).max(100),
+      }),
+    )
+    .query(({ ctx, input }) =>
+      getRunToolCalls(ctx.db, ctx.ch, ctx.session.user.id, input),
+    ),
 
   // Distinct metadata keys in a window — the metadata filter's key picker.
   metadataKeys: protectedProcedure

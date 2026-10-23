@@ -3192,3 +3192,40 @@ export function getTraceToolCalls(
 		{ projectId: params.projectId, ids: params.traceIds },
 	);
 }
+
+export type TraceToolSpanRow = {
+	span_id: string;
+	trace_id: string;
+	name: string;
+	start_time: string;
+	duration_ms: number;
+	status: string;
+	error_message: string;
+	input: string;
+	output: string;
+};
+
+/**
+ * Every tool span of the given traces, in call order, with its payloads cut
+ * to `payloadCap` chars — the timeline drawer's inline tool log, so a run's
+ * calls read in place instead of one trace page at a time.
+ */
+export function getTraceToolSpans(
+	client: ClickHouseClient,
+	params: { projectId: string; traceIds: string[]; payloadCap: number },
+): Promise<TraceToolSpanRow[]> {
+	if (params.traceIds.length === 0) return Promise.resolve([]);
+	return rows<TraceToolSpanRow>(
+		client,
+		`SELECT
+       span_id, trace_id, name, start_time, duration_ms, status, error_message,
+       substring(input, 1, {cap:UInt32}) AS input,
+       substring(output, 1, {cap:UInt32}) AS output
+     FROM spans FINAL
+     WHERE project_id = {projectId:String}
+       AND trace_id IN {ids:Array(String)}
+       AND span_type = 'tool'
+     ORDER BY start_time ASC, span_id ASC`,
+		{ projectId: params.projectId, ids: params.traceIds, cap: params.payloadCap },
+	);
+}

@@ -2,6 +2,7 @@ import {
   getCustomerDisplays,
   getTraceRootContents,
   getTraceToolCalls,
+  getTraceToolSpans,
   listTraces,
   type TraceListRow,
 } from "@foglamp/clickhouse";
@@ -231,4 +232,36 @@ export async function getMetadataTimeline(
     },
     runs,
   };
+}
+
+// Per-payload cap for the inline tool log: enough for a case file or a CRM
+// update, small enough that a 5-turn run stays a light request.
+const TOOL_PAYLOAD_CAP = 16_000;
+
+/** One run's tool calls with their input/output, in call order — fetched
+ * when its timeline drawer opens. */
+export async function getRunToolCalls(
+  db: Db,
+  ch: Ch,
+  userId: string,
+  input: { projectId: string; traceIds: string[] },
+) {
+  await requireProjectAccess(db, userId, input.projectId);
+  const spans = await getTraceToolSpans(ch, {
+    projectId: input.projectId,
+    traceIds: input.traceIds,
+    payloadCap: TOOL_PAYLOAD_CAP,
+  });
+  return spans.map((s) => ({
+    spanId: s.span_id,
+    traceId: s.trace_id,
+    name: s.name,
+    startTime: s.start_time,
+    durationMs: num(s.duration_ms),
+    status: s.status,
+    errorMessage: s.error_message || null,
+    input: s.input || null,
+    output: s.output || null,
+    truncated: s.input.length >= TOOL_PAYLOAD_CAP || s.output.length >= TOOL_PAYLOAD_CAP,
+  }));
 }
