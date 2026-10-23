@@ -36,7 +36,13 @@ const projectActivityDay = new Map<string, string>();
 // --- Boot: ClickHouse client, schema, retention, pricing warmup -----------
 const client = createClickHouseClient(await clickHouseConfigFromEnv());
 const applied = await runMigrations(client);
-await applySpansRetention(client, env.RETENTION_DAYS_CAP);
+// Retention is housekeeping: a failure (ClickHouse busy, memory ceiling) must
+// not take the service down — the TTL is reasserted on the next boot.
+try {
+  await applySpansRetention(client, env.RETENTION_DAYS_CAP);
+} catch (err) {
+  console.warn(`[retention] spans TTL not reasserted: ${err instanceof Error ? err.message : String(err)}`);
+}
 // Prime the pricing cache so the first requests don't all race the fetch. Never
 // throws; an empty table just means early spans land with null cost.
 void getPricingTable();

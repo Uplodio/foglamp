@@ -61,5 +61,12 @@
         <number_of_free_entries_in_pool_to_execute_optimize_entire_partition>0</number_of_free_entries_in_pool_to_execute_optimize_entire_partition>
         <!-- Smaller merge blocks: less memory per running merge. -->
         <merge_max_block_size>1024</merge_max_block_size>
+        <!-- A TTL change (RETENTION_DAYS_CAP, reasserted on every boot) only
+             recalculates each part's expiry instead of rewriting every row.
+             The full rewrite drags the multi-MB input/output payloads through
+             memory: on 2026-10-23 it hit the 1.5 GB ceiling, failed, crashed
+             ingest's boot and kept retrying. Expired rows are still deleted,
+             by the next TTL merge. -->
+        <materialize_ttl_recalculate_only>1</materialize_ttl_recalculate_only>
     </merge_tree>
 </clickhouse>

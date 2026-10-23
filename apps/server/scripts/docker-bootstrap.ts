@@ -27,7 +27,13 @@ const applied = await runMigrations(ch, {
     if (e.phase === "start") console.log(`  • ${e.id} (${e.index + 1}/${e.total})…`);
   },
 });
-await applySpansRetention(ch, env.RETENTION_DAYS_CAP);
+// Retention is housekeeping: a failure (ClickHouse busy, memory ceiling) must
+// not take the service down — the TTL is reasserted on the next boot.
+try {
+  await applySpansRetention(ch, env.RETENTION_DAYS_CAP);
+} catch (err) {
+  console.warn(`[retention] spans TTL not reasserted: ${err instanceof Error ? err.message : String(err)}`);
+}
 await ch.close();
 console.log(
   `✓ ClickHouse ready (${applied.length ? `applied ${applied.join(", ")}` : "already up to date"})`,
