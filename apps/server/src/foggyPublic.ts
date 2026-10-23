@@ -9,7 +9,7 @@ import type { Context } from "hono";
 import { env } from "@foglamp/env/server";
 
 import type { AppEnv } from "./evlog";
-import { fog, google } from "./foggy";
+import { fog, foggyModel } from "./foggy";
 import { checkFoggyPublicRateLimit } from "./foggyRateLimit";
 import { docsTool } from "./foggyTools";
 import { GITHUB_URL } from "./links";
@@ -72,7 +72,7 @@ export async function handleFoggyPublic(c: Context<AppEnv>): Promise<Response> {
     return c.json({ error }, 429);
   }
 
-  if (!google) {
+  if (!foggyModel) {
     return c.json({ error: "Foggy isn't configured on this server." }, 503);
   }
 
@@ -100,7 +100,7 @@ export async function handleFoggyPublic(c: Context<AppEnv>): Promise<Response> {
       : null;
 
   const result = streamText({
-    model: google(env.FOGGY_MODEL),
+    model: foggyModel,
     system: systemPrompt(),
     messages: await convertToModelMessages(recent),
     tools: { searchDocs: docsTool() },

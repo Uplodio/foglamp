@@ -46,6 +46,7 @@
       "name": "server",
       "dependencies": {
         "@ai-sdk/google": "4.0.0",
+        "@ai-sdk/openai": "catalog:",
         "@foglamp/api": "workspace:*",
         "@foglamp/auth": "workspace:*",
         "@foglamp/cost": "workspace:*",

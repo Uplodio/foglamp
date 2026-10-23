@@ -70,8 +70,9 @@ const serverSchema = {
   // --- Weekly digest (Monday 08:00 UTC; the sweep polls hourly) ---
   WEEKLY_DIGEST_INTERVAL_MS: z.coerce.number().default(3_600_000),
   WEEKLY_DIGEST_FROM: z.string().default("Foglamp <digest@foglamp.dev>"),
-  // Model for the paid-tier summary paragraph; falls back to FOGGY_MODEL.
-  WEEKLY_DIGEST_MODEL: z.string().optional(),
+  // Model for the paid-tier summary paragraph (a Gemini model — the digest
+  // stays on the Google key; FOGGY_MODEL is an OpenAI id now).
+  WEEKLY_DIGEST_MODEL: z.string().default("gemini-3.1-flash-lite"),
 
   // --- Alerts (evaluator cron in apps/server) ---
   // How often the evaluator sweeps enabled rules; default every 60s.
@@ -140,10 +141,13 @@ const serverSchema = {
   ADMIN_PASSWORD: z.string().optional(),
 
   // --- Foggy (in-app AI assistant) ---
-  // Foggy is enabled only when a Google key is present; otherwise the chat
-  // reports that it isn't configured.
+  // Foggy runs on OpenAI (self-host, 2026-10-23): enabled only when
+  // OPENAI_API_KEY is present; otherwise the chat reports that it isn't
+  // configured. The Google key still drives alert diagnosis and the weekly
+  // digest summary.
   GOOGLE_GENERATIVE_AI_API_KEY: z.string().min(1).optional(),
-  FOGGY_MODEL: z.string().default("gemini-3.1-flash-lite"),
+  OPENAI_API_KEY: z.string().min(1).optional(),
+  FOGGY_MODEL: z.string().default("gpt-6-luna"),
   // Docs site Foggy's docs tool fetches llms.txt / llms-full.txt from.
   FOGGY_DOCS_URL: z.url().default("https://docs.foglamp.dev"),
   // Cost guardrails.

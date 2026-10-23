@@ -36,7 +36,14 @@ import { useQuery } from "@tanstack/react-query";
 import type { Route } from "next";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { PromptVersionChip } from "@/components/app/prompt-version-chip";
 import { AgentIcon } from "@/components/app/agent-icon";
@@ -1657,6 +1664,18 @@ const PANEL_WIDTH_KEY = "foglamp:trace-panel-width";
 const clampPanelWidth = (w: number) =>
   Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, w));
 
+/** The inspector's persisted width (client only) — for placeholders that must
+ * occupy exactly the space the real panel will. */
+export function readStoredPanelWidth(): number {
+  if (typeof window === "undefined") return PANEL_WIDTH;
+  try {
+    const stored = Number(localStorage.getItem(PANEL_WIDTH_KEY));
+    return Number.isFinite(stored) && stored > 0 ? clampPanelWidth(stored) : PANEL_WIDTH;
+  } catch {
+    return PANEL_WIDTH;
+  }
+}
+
 /**
  * The right-hand inspector — always open, showing either a single span or the
  * whole trace (the default). Switching targets swaps the content in place. The
@@ -1730,7 +1749,9 @@ export function DetailPanel({
   widthRef.current = width;
   // Stored width is applied after mount (not in the initializer) so server and
   // client render the same initial markup.
-  useEffect(() => {
+  // Layout effect, not effect: applied before the first paint, so the panel
+  // never flashes at the default width before snapping to the stored one.
+  useLayoutEffect(() => {
     const stored = Number(localStorage.getItem(PANEL_WIDTH_KEY));
     if (Number.isFinite(stored) && stored > 0)
       setWidth(clampPanelWidth(stored));

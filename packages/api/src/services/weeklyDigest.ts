@@ -301,7 +301,7 @@ async function writeSummary(
 	if (!google) return undefined;
 	try {
 		const { text } = await generateText({
-			model: google(env.WEEKLY_DIGEST_MODEL ?? env.FOGGY_MODEL),
+			model: google(env.WEEKLY_DIGEST_MODEL),
 			system: SUMMARY_SYSTEM,
 			prompt: describeForModel(digest),
 			maxOutputTokens: 200,

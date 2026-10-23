@@ -29,15 +29,18 @@ import type { Route } from "next";
 import Link from "next/link";
 import {
   type CSSProperties,
+  memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
+import { useSearchParams } from "next/navigation";
 
 import { AgentIcon, agentColor } from "@/components/app/agent-icon";
 import { ContextChip } from "@/components/app/context-chip";
-import { CopyButton } from "@/components/app/copy-button";
 import { CustomerAvatar } from "@/components/app/customer-avatar";
 import {
   FilterSelect,
@@ -49,14 +52,7 @@ import {
   useEntranceOnce,
   useSkeletonShown,
 } from "@/components/app/hooks";
-import { navItem } from "@/components/app/nav";
-import {
-  EmptyState,
-  NoProject,
-  PageHeader,
-  type PageHeaderBack,
-  StatCard,
-} from "@/components/app/page-parts";
+import { EmptyState, NoProject, StatCard } from "@/components/app/page-parts";
 import { useProject } from "@/components/app/project-context";
 import { useRange } from "@/components/app/range-context";
 import { RangeControl } from "@/components/app/range-picker";
@@ -76,6 +72,7 @@ import { type RouterOutputs, trpc } from "@/utils/trpc";
 import {
   computeSubtreeStats,
   DetailPanel,
+  readStoredPanelWidth,
 } from "../traces/[traceId]/trace-detail-client";
 import { TimelineHeader } from "./header";
 
@@ -139,6 +136,7 @@ export function TimelineClient() {
   const key = params.key;
   const value = params.value;
   const ready = !!key && !!value;
+  const storyKey = `${key}\u0000${value}`;
 
   // The key picker's options — every metadata key seen in the window.
   const metaKeys = useQuery({
@@ -193,16 +191,28 @@ export function TimelineClient() {
     [],
   );
 
-  const selected = params.span;
-  const select = useCallback(
-    (spanId: string) => patchParams({ span: spanId }),
-    [patchParams],
+  // The open row. Local state, mirrored into `?span=` with history.replaceState
+  // rather than a router navigation — a router.replace re-renders the route
+  // from the server on every click, which is what made row hopping lag.
+  const searchParams = useSearchParams();
+  const [selected, setSelected] = useState<string>(
+    () => searchParams.get("span") ?? "",
   );
+  const select = useCallback((spanId: string) => {
+    setSelected(spanId);
+    try {
+      const sp = new URLSearchParams(globalThis.location.search);
+      if (spanId) sp.set("span", spanId);
+      else sp.delete("span");
+      globalThis.history.replaceState(globalThis.history.state, "", `?${sp}`);
+    } catch {
+      /* URL mirroring is a convenience — the selection still works */
+    }
+  }, []);
 
   // A new story: seed the open runs and the selection — the `?span=` row's
   // run if the link names one, else the latest run's last model call (what
   // the story ended on).
-  const storyKey = `${key}\u0000${value}`;
   const [seededFor, setSeededFor] = useState<string | null>(null);
   useEffect(() => {
     if (!data || runs.length === 0 || seededFor === storyKey) return;
@@ -284,9 +294,19 @@ export function TimelineClient() {
     [detail.data, traceId],
   );
   const activeSpan = traceSpans.find((s) => s.spanId === selected) ?? null;
+  // While the next row's trace loads, the inspector keeps showing the last one
+  // instead of unmounting to a skeleton and back — no flash, no width reset.
+  const shownRef = useRef<{
+    span: NonNullable<typeof activeSpan>;
+    spans: typeof traceSpans;
+    story: string;
+  } | null>(null);
+  if (activeSpan) shownRef.current = { span: activeSpan, spans: traceSpans, story: storyKey };
+  const shown =
+    shownRef.current && shownRef.current.story === storyKey ? shownRef.current : null;
   const subtreeStats = useMemo(
-    () => computeSubtreeStats(traceSpans),
-    [traceSpans],
+    () => computeSubtreeStats(shown?.spans ?? []),
+    [shown?.spans],
   );
   const emptyMap = useMemo(() => new Map(), []);
 
@@ -313,27 +333,15 @@ export function TimelineClient() {
     const v = next.trim();
     if (!v || !key) return;
     rememberKey(key);
+    setSelected("");
     patchParams({ value: v, span: "" });
   };
 
-  const section = navItem("/timeline");
-  const back: PageHeaderBack | undefined = section
-    ? { ...section, href: `/timeline?key=${encodeURIComponent(key)}` as Route }
-    : undefined;
-
-  // Landing: the section header. Loaded: the value as the title with a crumb
-  // back to the landing, like a session page.
+  // One header in every state — the same one loading.tsx paints — so nothing
+  // shifts when the page or the story lands. The value lives in the paste box.
   const header = (
     <div className={cn(entrance && "page-fade-in")}>
-      {ready ? (
-        <PageHeader
-          title={value}
-          back={back}
-          titleTrailing={<CopyButton value={value} title="Copy value" />}
-        />
-      ) : (
-        <TimelineHeader />
-      )}
+      <TimelineHeader />
     </div>
   );
 
@@ -355,6 +363,7 @@ export function TimelineClient() {
           value={key}
           onChange={(v) => {
             rememberKey(v);
+            setSelected("");
             patchParams({ key: v, value: "", span: "" });
           }}
           allLabel="Metadata key"
@@ -402,7 +411,7 @@ export function TimelineClient() {
       {/* Context chips: the key this value lives under (to the filtered
           traces list), the customer it belongs to, and the agents that
           touched it — the same linked-entity pills as the session page. */}
-      {(data?.customer || runs.length > 0) && (
+      {ready && (
         <div
           className={cn(
             "flex flex-wrap items-center gap-2 px-6 text-xs",
@@ -529,7 +538,7 @@ export function TimelineClient() {
                   <TreeSkeleton />
                 ) : null
               ) : (
-                <div className="flex flex-col gap-1">
+                <div className="flex flex-col gap-3">
                   {runs.map((r) => (
                     <RunGroup
                       key={runKey(r)}
@@ -543,12 +552,12 @@ export function TimelineClient() {
                 </div>
               )}
             </div>
-            {activeSpan ? (
+            {shown ? (
               <DetailPanel
-                span={activeSpan}
+                span={shown.span}
                 scores={[]}
                 trace={null}
-                spans={traceSpans}
+                spans={shown.spans}
                 evalMeta={emptyMap}
                 presetName={emptyMap}
                 spanIndex={selectedIndex}
@@ -574,8 +583,10 @@ export function TimelineClient() {
   );
 }
 
-/** One run as a foldable group: a header row (agent, workflow, when, size,
- * cost) and, unfolded, its model and tool calls on bars scaled to the run. */
+/** One run as a card: a header (agent, workflow, when, size, cost) and,
+ * unfolded, its model calls with the tool calls each one made nested beneath
+ * it, on bars scaled to the run's own clock. Cards stack with a gap, so where
+ * one sweep ends and the next begins is never in doubt. */
 function RunGroup({
   run,
   open,
@@ -589,39 +600,48 @@ function RunGroup({
   selected: string;
   onSelect: (spanId: string) => void;
 }) {
-  const startMs = run.steps.length
-    ? Math.min(...run.steps.map((s) => toMs(s.startTime)))
-    : toMs(run.startTime);
-  const endMs = run.steps.length
-    ? Math.max(...run.steps.map((s) => toMs(s.startTime) + s.durationMs))
-    : toMs(run.endTime);
-  const total = Math.max(1, endMs - startMs);
+  const { startMs, total } = useMemo(() => {
+    if (run.steps.length === 0) {
+      const st = toMs(run.startTime);
+      return { startMs: st, total: Math.max(1, toMs(run.endTime) - st) };
+    }
+    let lo = Number.POSITIVE_INFINITY;
+    let hi = 0;
+    for (const s of run.steps) {
+      const st = toMs(s.startTime);
+      lo = Math.min(lo, st);
+      hi = Math.max(hi, st + s.durationMs);
+    }
+    return { startMs: lo, total: Math.max(1, hi - lo) };
+  }, [run]);
   const color = agentColor(run.agentName);
+  const steps = run.steps.length;
   return (
-    <div className="flex flex-col">
-      {/* Run header — the group row. Same height and grid as the step rows so
-          the duration column lines up down the whole tree. */}
+    <section className="overflow-hidden corner-squircle rounded-lg bg-card shadow-(--custom-shadow) squircle:rounded-2xl">
+      {/* Run header — same grid as the rows, so the duration column lines up
+          from the header down through every step. */}
       <button
         type="button"
         onClick={onToggle}
         aria-expanded={open}
         className={cn(
           ROW_GRID,
-          "min-h-11 cursor-pointer items-center rounded-md py-1 text-left text-xs hover:bg-accent/80 @lg:text-sm dark:hover:bg-accent/50",
+          "min-h-12 w-full cursor-pointer items-center px-3 py-2 text-left text-xs transition-colors hover:bg-muted/50 @lg:text-sm dark:hover:bg-muted-foreground/10",
+          open && "border-b border-border/40",
         )}
       >
-        <div className="flex min-w-0 items-center gap-2 pr-3">
+        <div className="flex min-w-0 items-center gap-2.5 pr-3">
           <IconChevronRight
             className={cn(
-              "size-3 shrink-0 text-muted-foreground/60 transition-transform",
+              "size-3.5 shrink-0 text-muted-foreground/60 transition-transform duration-150",
               open && "rotate-90",
             )}
           />
           <span
-            className="flex size-4.5 shrink-0 items-center justify-center rounded-md corner-squircle"
+            className="flex size-6 shrink-0 items-center justify-center rounded-md corner-squircle"
             style={{ backgroundColor: `${color}26` } as CSSProperties}
           >
-            <AgentIcon name={run.agentName} className="size-3" />
+            <AgentIcon name={run.agentName} className="size-3.5" />
           </span>
           <div className="flex min-w-0 flex-col">
             <span className="truncate font-medium">
@@ -633,30 +653,26 @@ function RunGroup({
           </div>
         </div>
         <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-          <span className="inline-flex items-center gap-1">
-            <AgentIcon name={run.agentName} className="size-3" />
-            {run.agentName ?? "—"}
+          <span className="truncate">{run.agentName ?? "—"}</span>
+          <span className="text-muted-foreground/40">·</span>
+          <span className="shrink-0 tabular-nums">
+            {formatCount(steps)} {steps === 1 ? "step" : "steps"}
           </span>
-          <span>·</span>
-          <span className="tabular-nums">
-            {formatCount(run.steps.length)}{" "}
-            {run.steps.length === 1 ? "step" : "steps"}
-          </span>
-          <span>·</span>
-          <span className="tabular-nums">{formatCost(run.totalCost)}</span>
+          <span className="text-muted-foreground/40">·</span>
+          <span className="shrink-0 tabular-nums">{formatCost(run.totalCost)}</span>
           {run.errorCount > 0 && (
             <Badge variant="rose" className="shrink-0 gap-1 font-sans">
               <IconAlertTriangle className="size-3" />
               {run.errorCount}
             </Badge>
           )}
-          <span className="ml-auto hidden items-center gap-1 @lg:flex">
+          <span className="ml-auto hidden shrink-0 items-center gap-0.5 @lg:flex">
             {run.sessionId && (
               <Link
                 href={`/sessions/${encodeURIComponent(run.sessionId)}`}
                 onClick={(e) => e.stopPropagation()}
                 title="Open the session"
-                className="inline-flex items-center rounded-md p-1 hover:bg-muted hover:text-foreground"
+                className="inline-flex items-center rounded-md p-1 transition-colors hover:bg-muted"
               >
                 <IconMessage2Filled className="size-3.5 text-sky-500" />
               </Link>
@@ -668,7 +684,7 @@ function RunGroup({
                 }
                 onClick={(e) => e.stopPropagation()}
                 title="Open the workflow run"
-                className="inline-flex items-center rounded-md p-1 hover:bg-muted hover:text-foreground"
+                className="inline-flex items-center rounded-md p-1 transition-colors hover:bg-muted"
               >
                 <IconSitemapFilled className="size-3.5 text-emerald-500" />
               </Link>
@@ -681,8 +697,8 @@ function RunGroup({
       </button>
 
       {open && (
-        <div className="flex flex-col">
-          {run.steps.length === 0 ? (
+        <div className="flex flex-col px-3 py-1.5">
+          {steps === 0 ? (
             <p className="py-2 pl-9 text-xs text-muted-foreground italic">
               No model or tool calls recorded for this run.
             </p>
@@ -694,19 +710,21 @@ function RunGroup({
                 runStartMs={startMs}
                 totalMs={total}
                 selected={s.spanId === selected}
-                onSelect={() => onSelect(s.spanId)}
+                onSelect={onSelect}
               />
             ))
           )}
         </div>
       )}
-    </div>
+    </section>
   );
 }
 
-/** One model call or tool call — the trace waterfall's row, with its bar
- * placed on the run's own clock. */
-function StepRow({
+/** One model call or tool call — the trace waterfall's row, with its bar on
+ * the run's clock. Model calls sit one level under the run; the tool calls a
+ * model call made sit one level deeper, on a guide line. Memoized: moving the
+ * selection re-renders two rows, not the whole tree. */
+const StepRow = memo(function StepRow({
   step,
   runStartMs,
   totalMs,
@@ -717,16 +735,15 @@ function StepRow({
   runStartMs: number;
   totalMs: number;
   selected: boolean;
-  onSelect: () => void;
+  onSelect: (spanId: string) => void;
 }) {
+  const isTool = step.spanType === "tool";
   const isError = step.status === "error";
   const isAborted = step.status === "aborted";
-  const offset = ((toMs(step.startTime) - runStartMs) / totalMs) * 100;
-  const width = Math.max(0.6, (step.durationMs / totalMs) * 100);
-  const accent =
-    step.spanType === "llm"
-      ? modelBrandColor(step.provider, step.modelId)
-      : null;
+  const rawOffset = ((toMs(step.startTime) - runStartMs) / totalMs) * 100;
+  const offset = Math.min(Math.max(rawOffset, 0), 99.4);
+  const width = Math.min(Math.max(0.6, (step.durationMs / totalMs) * 100), 100 - offset);
+  const accent = !isTool ? modelBrandColor(step.provider, step.modelId) : null;
   const barClass = isError
     ? "bg-rose-500"
     : isAborted
@@ -734,26 +751,35 @@ function StepRow({
       : accent
         ? undefined
         : spanTypeBar(step.spanType);
-  const label =
-    step.spanType === "llm"
-      ? step.modelId
-        ? formatModelName(step.modelId)
-        : step.name
-      : step.name;
+  const label = !isTool && step.modelId ? formatModelName(step.modelId) : step.name;
   return (
     <button
       id={`step-${step.spanId}`}
       type="button"
-      onClick={onSelect}
+      onClick={() => onSelect(step.spanId)}
       className={cn(
         ROW_GRID,
-        "min-h-10 cursor-pointer items-center rounded-md py-1 text-left text-xs @lg:text-sm",
+        "min-h-9 cursor-pointer items-center rounded-md py-0.5 text-left text-xs @lg:text-sm",
         selected
           ? "bg-accent dark:bg-accent/70"
           : "hover:bg-accent/80 dark:hover:bg-accent/50",
       )}
     >
-      <div className="flex min-w-0 items-center gap-2 pr-3 pl-7">
+      <div
+        className={cn(
+          "relative flex min-w-0 items-center gap-2 pr-3",
+          isTool ? "pl-12" : "pl-6",
+        )}
+      >
+        {/* Tree guides: the run's spine under every row, and an elbow into
+            each tool call from the model call that made it. */}
+        <span aria-hidden className="absolute inset-y-0 left-[0.6875rem] w-px bg-border/70" />
+        {isTool && (
+          <>
+            <span aria-hidden className="absolute inset-y-0 left-[2.1875rem] w-px bg-border/70" />
+            <span aria-hidden className="absolute top-1/2 left-[2.1875rem] h-px w-2.5 bg-border/70" />
+          </>
+        )}
         <SpanIconChip
           span={{
             name: step.name,
@@ -763,7 +789,10 @@ function StepRow({
           }}
         />
         <span
-          className={cn("truncate", step.spanType === "tool" && "font-mono")}
+          className={cn(
+            "truncate",
+            isTool ? "font-mono text-[12px] @lg:text-[13px]" : "font-medium",
+          )}
           title={step.name}
         >
           {label}
@@ -780,10 +809,11 @@ function StepRow({
           className={cn(
             "absolute top-1/2 h-2 -translate-y-1/2 rounded-xs",
             barClass,
+            isTool && "opacity-80",
           )}
           style={{
-            left: `${Math.min(offset, 99.4)}%`,
-            width: `${Math.min(width, 100 - Math.min(offset, 99.4))}%`,
+            left: `${offset}%`,
+            width: `${width}%`,
             ...(barClass ? {} : { backgroundColor: accent ?? undefined }),
           }}
           title={`${label} · ${formatSpanDuration(step.durationMs)}${
@@ -796,16 +826,22 @@ function StepRow({
       </span>
     </button>
   );
-}
+});
 
 function TreeSkeleton() {
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-3">
       {[0, 1].map((g) => (
-        <div key={g} className="flex flex-col gap-2">
-          <Skeleton className="h-9 w-2/3" />
+        <div
+          key={g}
+          className="flex flex-col gap-2 corner-squircle rounded-lg bg-card p-3 shadow-(--custom-shadow) squircle:rounded-2xl"
+        >
+          <div className="flex items-center gap-2.5">
+            <Skeleton className="size-6 rounded-md" />
+            <Skeleton className="h-4 w-48" />
+          </div>
           {[0, 1, 2, 3].map((i) => (
-            <div key={i} className={cn(ROW_GRID, "items-center gap-2 pl-7")}>
+            <div key={i} className={cn(ROW_GRID, "items-center", i % 2 ? "pl-12" : "pl-6")}>
               <Skeleton className="h-4 w-28" />
               <Skeleton
                 className="h-2"
@@ -820,11 +856,13 @@ function TreeSkeleton() {
   );
 }
 
-/** Stand-in for the inspector while the selected row's trace loads (same
- * width and chrome as the real panel, so nothing shifts when it lands). */
+/** Stand-in for the inspector until the first row's trace loads — the real
+ * panel's chrome at its persisted width, so nothing moves when it lands. */
 function InspectorSkeleton({ message }: { message: string | null }) {
+  const [width, setWidth] = useState(420);
+  useLayoutEffect(() => setWidth(readStoredPanelWidth()), []);
   return (
-    <aside className="sticky top-4 w-[420px] shrink-0 self-start">
+    <aside className="sticky top-4 shrink-0 self-start" style={{ width }}>
       <div className="flex flex-col gap-4 corner-squircle rounded-lg bg-card p-5 shadow-(--custom-shadow) squircle:rounded-3xl">
         {message ? (
           <p className="text-sm text-muted-foreground">{message}</p>

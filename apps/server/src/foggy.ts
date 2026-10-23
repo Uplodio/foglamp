@@ -1,4 +1,4 @@
-import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createOpenAI } from "@ai-sdk/openai";
 import {
   convertToModelMessages,
   stepCountIs,
@@ -21,9 +21,10 @@ import { checkFoggyRateLimit } from "./foggyRateLimit";
 import { buildFoggyTools, untrusted } from "./foggyTools";
 import { GITHUB_URL } from "./links";
 
-// Foggy is enabled only when a Google key is configured.
-export const google = env.GOOGLE_GENERATIVE_AI_API_KEY
-  ? createGoogleGenerativeAI({ apiKey: env.GOOGLE_GENERATIVE_AI_API_KEY })
+// Foggy's model: OpenAI (FOGGY_MODEL, default gpt-6-luna). Enabled only when
+// an OpenAI key is configured; null means "not configured" to both chats.
+export const foggyModel = env.OPENAI_API_KEY
+  ? createOpenAI({ apiKey: env.OPENAI_API_KEY })(env.FOGGY_MODEL)
   : null;
 
 // Dogfooding: a no-op collector unless FOGLAMP_API_KEY is set in the server env.
@@ -175,11 +176,11 @@ export async function handleFoggy(c: Context<AppEnv>): Promise<Response> {
     );
   }
 
-  if (!google) {
+  if (!foggyModel) {
     return c.json(
       {
         error:
-          "Foggy isn't configured on this server (missing GOOGLE_GENERATIVE_AI_API_KEY).",
+          "Foggy isn't configured on this server (missing OPENAI_API_KEY).",
       },
       503,
     );
@@ -231,7 +232,7 @@ export async function handleFoggy(c: Context<AppEnv>): Promise<Response> {
   const defaultWindow = resolveRange(body?.range);
 
   const result = streamText({
-    model: google(env.FOGGY_MODEL),
+    model: foggyModel,
     system: systemPrompt(projectName, describeLocation(body?.pathname), defaultWindow),
     messages: await convertToModelMessages(messages),
     tools: buildFoggyTools({ ch, userId, projectId, defaultWindow }),
