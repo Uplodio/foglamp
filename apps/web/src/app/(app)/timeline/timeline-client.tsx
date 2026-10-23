@@ -1,87 +1,68 @@
 "use client";
 
 import { Badge } from "@foglamp/ui/components/badge";
-import { Button } from "@foglamp/ui/components/button";
-import { Skeleton } from "@foglamp/ui/components/skeleton";
 import {
   InputGroup,
   InputGroupAddon,
   InputGroupButton,
   InputGroupInput,
 } from "@foglamp/ui/components/input-group";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@foglamp/ui/components/table";
+import { Skeleton } from "@foglamp/ui/components/skeleton";
 import { cn } from "@foglamp/ui/lib/utils";
 import {
   IconAffiliateFilled,
   IconAlertTriangle,
   IconAlertTriangleFilled,
   IconArrowRight,
-  IconArrowUpRight,
-  IconChevronDown,
-  IconChevronRight,
   IconBoltFilled,
+  IconChevronRight,
   IconCoinFilled,
+  IconMessage2Filled,
   IconSitemapFilled,
   IconTag,
   IconTagFilled,
   IconTimelineEvent,
-  IconTool,
   IconX,
 } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
 import type { Route } from "next";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
-import { Fragment, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
-import { AgentIcon } from "@/components/app/agent-icon";
-import { DRAWER_BUTTON_CLASS } from "@/components/app/button-styles";
-import { Chip, ContextChip } from "@/components/app/context-chip";
+import { AgentIcon, agentColor } from "@/components/app/agent-icon";
+import { ContextChip } from "@/components/app/context-chip";
 import { CopyButton } from "@/components/app/copy-button";
 import { CustomerAvatar } from "@/components/app/customer-avatar";
-import { FilterSelect, Toolbar, useUrlFilters } from "@/components/app/data-table";
-import { HeatCell } from "@/components/app/heat-cell";
+import {
+  FilterSelect,
+  Toolbar,
+  useUrlFilters,
+} from "@/components/app/data-table";
 import {
   useDelayedLoading,
   useEntranceOnce,
   useSkeletonShown,
 } from "@/components/app/hooks";
 import { navItem } from "@/components/app/nav";
-import { type FlowNode, NodeFlow } from "@/components/app/node-flow";
 import {
   EmptyState,
   NoProject,
   PageHeader,
   type PageHeaderBack,
-  type SkeletonCol,
   StatCard,
-  TableRowsSkeleton,
 } from "@/components/app/page-parts";
 import { useProject } from "@/components/app/project-context";
 import { useRange } from "@/components/app/range-context";
 import { RangeControl } from "@/components/app/range-picker";
-import { JsonBlock, Prose } from "@/components/app/payload-view";
-import { RelativeTime } from "@/components/app/relative-time";
-import {
-  Conversation,
-  CustomerValue,
-  DrawerColumns,
-  DrawerRow,
-  ExpandChevron,
-  FOCUSED_ROW_CLASS,
-  Meta,
-  MetaEmpty,
-  ModelsValue,
-  OPEN_ROW_CLASS,
-  SessionButton,
-} from "@/components/app/run-exchange";
+import { spanTypeBar } from "@/components/app/span-type";
+import { SpanIconChip } from "@/components/app/trace-timeline";
+import { formatModelName, modelBrandColor } from "@/components/model-logo";
 import {
   formatCost,
   formatCostFixed,
@@ -90,21 +71,17 @@ import {
   formatSpanDuration,
   formatTokens,
 } from "@/lib/format";
+import { toMs } from "@/lib/trace-timeline";
 import { type RouterOutputs, trpc } from "@/utils/trpc";
+import {
+  computeSubtreeStats,
+  DetailPanel,
+} from "../traces/[traceId]/trace-detail-client";
 import { TimelineHeader } from "./header";
 
 type Timeline = RouterOutputs["traces"]["timeline"];
 type Run = Timeline["runs"][number];
-
-// Mirrors the runs table's column widths so the skeleton→data swap can't
-// shift the layout (Run | Traces | Duration | Cost | When).
-const SKELETON_COLS: readonly SkeletonCol[] = [
-  { w: "w-72", icon: true },
-  { align: "right", w: "w-8" },
-  { align: "right", w: "w-14" },
-  { align: "right", w: "w-16" },
-  { align: "right", w: "w-16" },
-] as const;
+type Step = Run["steps"][number];
 
 // Metadata-key option identity — the fuchsia tag the traces list uses for
 // metadata values, so the picker reads as the same thing.
@@ -131,43 +108,37 @@ function rememberKey(key: string): void {
   }
 }
 
-/** 20/40/60/80th-percentile thresholds of the positive values (sorted-nearest)
- * — the heat shades for a column, computed over this timeline's runs. */
-function quintiles(values: number[]): number[] {
-  const xs = values.filter((v) => v > 0).sort((a, b) => a - b);
-  if (xs.length === 0) return [];
-  return [0.2, 0.4, 0.6, 0.8].map((q) => {
-    const idx = Math.min(xs.length - 1, Math.floor(q * (xs.length - 1)));
-    return xs[idx] as number;
-  });
+// Same row grid as the trace waterfall, so a run reads like a trace: name |
+// bar track | duration. The container query is set on the tree's wrapper.
+const ROW_GRID =
+  "grid grid-cols-[9.5rem_minmax(0,1fr)_3.25rem] @lg:grid-cols-[15rem_minmax(0,1fr)_6.5rem]";
+
+// Runs that start expanded: a short story opens whole, a long one opens on
+// its latest runs (the older ones are one click away).
+const OPEN_ALL_UP_TO = 4;
+const OPEN_LATEST = 3;
+
+function runKey(r: Run): string {
+  return `${r.kind}:${r.runId}`;
 }
 
 /**
- * "What happened to X": every trace carrying one metadata value, folded into
- * runs (a session, a workflow run, or a lone trace) and told oldest first —
- * the workflow page's runs table, cut across sessions and workflows for one
- * record. Pick the key, paste the value, and click a run for its overview,
- * its tool steps, and its exchange.
+ * "What happened to X": every trace carrying one metadata value, told as one
+ * tree — each run (a session, a workflow run, or a lone trace) is a group of
+ * its model calls and tool calls on run-relative timing bars — with the trace
+ * page's own inspector on the right. Pick the key, paste the value, click a
+ * row (or walk with ↑/↓) to read its input, output, tokens and cost in place.
  */
 export function TimelineClient() {
   const entrance = useEntranceOnce();
   const { projectId } = useProject();
   const { range, setRange } = useRange();
-  const router = useRouter();
-  const searchParams = useSearchParams();
   // The story's address lives in the URL so it survives reload and can be
-  // shared; `run` is the open drawer (see toggleRun).
-  const [params, patchParams] = useUrlFilters({ key: "", value: "", run: "" });
+  // shared; `span` is the row open in the inspector.
+  const [params, patchParams] = useUrlFilters({ key: "", value: "", span: "" });
   const key = params.key;
   const value = params.value;
   const ready = !!key && !!value;
-
-  // A `?run=` deep link focuses one run: its row opens and is tinted (same
-  // mechanics as the workflow page).
-  const focusRun = searchParams.get("run");
-  const [expanded, setExpanded] = useState<string | null>(focusRun);
-  const [deepLinked, setDeepLinked] = useState<string | null>(focusRun);
-  const focusRef = useRef<HTMLTableRowElement>(null);
 
   // The key picker's options — every metadata key seen in the window.
   const metaKeys = useQuery({
@@ -205,53 +176,144 @@ export function TimelineClient() {
     placeholderData: (prev) => prev,
   });
   const data = timeline.data;
-  const runs = data?.runs ?? [];
+  const runs = useMemo(() => data?.runs ?? [], [data]);
   const stats = data?.stats;
 
-  // Reset the open drawer when the story changes (skipping mount, so a
-  // deep-linked drawer survives the first render).
-  const mounted = useRef(false);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on query changes only
-  useEffect(() => {
-    if (!mounted.current) {
-      mounted.current = true;
-      return;
-    }
-    setExpanded(null);
-  }, [key, value, range, projectId]);
+  // Which runs are unfolded. Seeded once per story (see below); afterwards
+  // the reader owns it.
+  const [openRuns, setOpenRuns] = useState<ReadonlySet<string> | null>(null);
+  const toggleRun = useCallback(
+    (k: string) =>
+      setOpenRuns((prev) => {
+        const next = new Set(prev ?? []);
+        if (next.has(k)) next.delete(k);
+        else next.add(k);
+        return next;
+      }),
+    [],
+  );
 
-  const toggleRun = (id: string) => {
-    const next = expanded === id ? null : id;
-    setExpanded(next);
-    setDeepLinked(null);
-    const sp = new URLSearchParams(Array.from(searchParams.entries()));
-    if (next) sp.set("run", next);
-    else sp.delete("run");
-    router.replace(`?${sp.toString()}`, { scroll: false });
-  };
-  // Once the deep-linked run is on the page, scroll it into view.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: re-run as runs load
+  const selected = params.span;
+  const select = useCallback(
+    (spanId: string) => patchParams({ span: spanId }),
+    [patchParams],
+  );
+
+  // A new story: seed the open runs and the selection — the `?span=` row's
+  // run if the link names one, else the latest run's last model call (what
+  // the story ended on).
+  const storyKey = `${key}\u0000${value}`;
+  const [seededFor, setSeededFor] = useState<string | null>(null);
   useEffect(() => {
-    if (deepLinked && focusRef.current) {
-      focusRef.current.scrollIntoView({ block: "center", behavior: "smooth" });
+    if (!data || runs.length === 0 || seededFor === storyKey) return;
+    setSeededFor(storyKey);
+    const open = new Set(
+      (runs.length <= OPEN_ALL_UP_TO ? runs : runs.slice(-OPEN_LATEST)).map(
+        runKey,
+      ),
+    );
+    const linked = selected
+      ? runs.find((r) => r.steps.some((s) => s.spanId === selected))
+      : undefined;
+    if (linked) {
+      open.add(runKey(linked));
+    } else {
+      const last = runs[runs.length - 1];
+      const llm = [...last.steps].reverse().find((s) => s.spanType === "llm");
+      const pick = llm ?? last.steps[last.steps.length - 1];
+      if (pick) select(pick.spanId);
     }
-  }, [deepLinked, timeline.data]);
+    setOpenRuns(open);
+  }, [data, runs, seededFor, storyKey, selected, select]);
+
+  // The visible rows in visual order — what ↑/↓ and the inspector's
+  // previous/next walk, across runs.
+  const visible = useMemo(() => {
+    const out: Step[] = [];
+    for (const r of runs) if (openRuns?.has(runKey(r))) out.push(...r.steps);
+    return out;
+  }, [runs, openRuns]);
+  const selectedIndex = visible.findIndex((s) => s.spanId === selected);
+  const selectedStep =
+    selectedIndex >= 0
+      ? visible[selectedIndex]
+      : runs.flatMap((r) => r.steps).find((s) => s.spanId === selected);
+
+  const stepSelection = useCallback(
+    (delta: number) => {
+      if (visible.length === 0) return;
+      const i = visible.findIndex((s) => s.spanId === selected);
+      const ni = i < 0 ? 0 : Math.max(0, Math.min(visible.length - 1, i + delta));
+      select(visible[ni].spanId);
+      document
+        .getElementById(`step-${visible[ni].spanId}`)
+        ?.scrollIntoView({ block: "nearest" });
+    },
+    [visible, selected, select],
+  );
+  // ↑/↓ or j/k walk the rows, like the trace page. Ignored while typing so
+  // the paste box and payloads keep their keys.
+  useEffect(() => {
+    if (visible.length === 0) return;
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      const next = e.key === "ArrowDown" || e.key === "j";
+      const prev = e.key === "ArrowUp" || e.key === "k";
+      if (!next && !prev) return;
+      e.preventDefault();
+      stepSelection(next ? 1 : -1);
+    };
+    globalThis.addEventListener("keydown", onKey);
+    return () => globalThis.removeEventListener("keydown", onKey);
+  }, [visible.length, stepSelection]);
+
+  // The selected row's trace, with payloads — the inspector's data. Cached
+  // per trace, so walking a run's rows refetches only at trace boundaries.
+  const traceId = selectedStep?.traceId ?? null;
+  const detail = useQuery({
+    ...trpc.traces.get.queryOptions({
+      projectId: projectId!,
+      traceId: traceId ?? "",
+    }),
+    enabled: !!projectId && !!traceId,
+    placeholderData: (prev) => prev,
+  });
+  const traceSpans = useMemo(
+    () => (detail.data?.traceId === traceId ? detail.data.spans : []) ?? [],
+    [detail.data, traceId],
+  );
+  const activeSpan = traceSpans.find((s) => s.spanId === selected) ?? null;
+  const subtreeStats = useMemo(
+    () => computeSubtreeStats(traceSpans),
+    [traceSpans],
+  );
+  const emptyMap = useMemo(() => new Map(), []);
+
+  // Whether the tree outgrows the viewport — the inspector may then use more
+  // height (same rule as the trace page).
+  const [treeEl, setTreeEl] = useState<HTMLDivElement | null>(null);
+  const [tall, setTall] = useState(false);
+  useEffect(() => {
+    if (!treeEl) return;
+    const check = () =>
+      setTall(treeEl.offsetHeight > globalThis.innerHeight - 14 * 16);
+    check();
+    const observer = new ResizeObserver(check);
+    observer.observe(treeEl);
+    return () => observer.disconnect();
+  }, [treeEl]);
 
   // Delay the skeleton so fast loads don't flash it (see useDelayedLoading).
   const showSkeleton = useDelayedLoading(ready && timeline.isLoading);
   const skeletonShown = useSkeletonShown(showSkeleton);
 
-  const costQuantiles = quintiles(runs.map((r) => r.totalCost));
-  const durationQuantiles = quintiles(runs.map((r) => r.durationMs));
-
-  // Follow a value: a new story, with any open drawer left behind.
+  // Follow a value: a new story, the inspector cleared until it seeds.
   const follow = (next: string) => {
     const v = next.trim();
     if (!v || !key) return;
     rememberKey(key);
-    setExpanded(null);
-    setDeepLinked(null);
-    patchParams({ value: v, run: "" });
+    patchParams({ value: v, span: "" });
   };
 
   const section = navItem("/timeline");
@@ -293,9 +355,7 @@ export function TimelineClient() {
           value={key}
           onChange={(v) => {
             rememberKey(v);
-            setExpanded(null);
-            setDeepLinked(null);
-            patchParams({ key: v, value: "", run: "" });
+            patchParams({ key: v, value: "", span: "" });
           }}
           allLabel="Metadata key"
           icon={IconTag}
@@ -334,77 +394,6 @@ export function TimelineClient() {
 
   const noRuns = !timeline.isLoading && runs.length === 0;
 
-  const renderRun = (r: Run) => {
-    const rowKey = `${r.kind}:${r.runId}`;
-    const isOpen = expanded === r.runId;
-    const isFocused = r.runId === deepLinked;
-    return (
-      <Fragment key={rowKey}>
-        <TableRow
-          ref={isFocused ? focusRef : undefined}
-          interactive
-          aria-expanded={isOpen}
-          onClick={() => toggleRun(r.runId)}
-          className={cn(
-            "group",
-            isOpen && OPEN_ROW_CLASS,
-            isFocused && FOCUSED_ROW_CLASS,
-          )}
-        >
-          {/* Content-first: the run's opening user message, falling back to
-              what it reported, then its id; the agents involved trail on the
-              right. */}
-          <TableCell className="h-12 font-normal">
-            <div className="flex items-center gap-2">
-              <ExpandChevron open={isOpen} />
-              <span className="truncate">
-                {r.openingMessage ?? r.outcome ?? (
-                  <span className="font-mono text-xs text-muted-foreground">
-                    {r.runId}
-                  </span>
-                )}
-              </span>
-              {r.errorCount > 0 && (
-                <span
-                  title={`${r.errorCount} ${r.errorCount === 1 ? "error" : "errors"}`}
-                  className="flex shrink-0 items-center gap-0.75 font-sans text-sm text-red-600 dark:text-red-400"
-                >
-                  <IconAlertTriangle className="size-3.5 fill-current/20" />
-                  {r.errorCount}
-                </span>
-              )}
-              <AgentStack names={r.agents} />
-            </div>
-          </TableCell>
-          <TableCell className="text-right tabular-nums">
-            {formatCount(r.turns.length)}
-          </TableCell>
-          <HeatCell
-            value={r.durationMs}
-            thresholds={durationQuantiles}
-            metric="duration"
-          >
-            {formatSpanDuration(r.durationMs)}
-          </HeatCell>
-          <HeatCell
-            value={r.totalCost}
-            thresholds={costQuantiles}
-            metric="cost"
-            bold
-          >
-            {formatCost(r.totalCost)}
-          </HeatCell>
-          <TableCell className="text-right text-muted-foreground">
-            <RelativeTime value={r.startTime} />
-          </TableCell>
-        </TableRow>
-        {isOpen && (
-          <RunDrawer run={r} customer={data?.customer ?? null} colSpan={5} />
-        )}
-      </Fragment>
-    );
-  };
-
   return (
     <>
       {header}
@@ -413,7 +402,7 @@ export function TimelineClient() {
       {/* Context chips: the key this value lives under (to the filtered
           traces list), the customer it belongs to, and the agents that
           touched it — the same linked-entity pills as the session page. */}
-      {(data?.customer || (data?.runs.length ?? 0) > 0) && (
+      {(data?.customer || runs.length > 0) && (
         <div
           className={cn(
             "flex flex-wrap items-center gap-2 px-6 text-xs",
@@ -526,45 +515,341 @@ export function TimelineClient() {
             </div>
           )}
 
-          {/* Runs table, oldest first — click a row to open its steps and exchange. */}
+          {/* The story: the run tree on the left, the trace page's inspector
+              on the right — the same split as a trace, across every run. */}
           <div
             className={cn(
-              "mt-4 flex flex-col",
+              "mt-2 flex items-start gap-6 px-8 pb-8",
               entrance && !skeletonShown && "page-fade-in",
             )}
           >
-            {/* pr-11 (not the default pr-9): the range picker lives in the
-                toolbar's trailing group, which lifts into the header when
-                space is tight, so the last column lines up with it the way
-                the list pages do. */}
-            <Table
-              className="table-fixed [&_th:last-child]:pr-11 [&_td:last-child]:pr-11"
-              stickyHeader
-            >
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Run</TableHead>
-                  <TableHead className="w-24 text-right">Traces</TableHead>
-                  <TableHead className="w-28 text-right">Duration</TableHead>
-                  <TableHead className="w-28 text-right">Cost</TableHead>
-                  <TableHead className="w-32 text-right">When</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {timeline.isLoading ? (
-                  showSkeleton ? (
-                    <TableRowsSkeleton cols={SKELETON_COLS} />
-                  ) : null
-                ) : (
-                  runs.map(renderRun)
-                )}
-              </TableBody>
-            </Table>
+            <div ref={setTreeEl} className="@container min-w-0 flex-1">
+              {timeline.isLoading ? (
+                showSkeleton ? (
+                  <TreeSkeleton />
+                ) : null
+              ) : (
+                <div className="flex flex-col gap-1">
+                  {runs.map((r) => (
+                    <RunGroup
+                      key={runKey(r)}
+                      run={r}
+                      open={!!openRuns?.has(runKey(r))}
+                      onToggle={() => toggleRun(runKey(r))}
+                      selected={selected}
+                      onSelect={select}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+            {activeSpan ? (
+              <DetailPanel
+                span={activeSpan}
+                scores={[]}
+                trace={null}
+                spans={traceSpans}
+                evalMeta={emptyMap}
+                presetName={emptyMap}
+                spanIndex={selectedIndex}
+                spanCount={visible.length}
+                onStep={stepSelection}
+                subtreeStats={subtreeStats}
+                rank={null}
+                tall={tall}
+              />
+            ) : (
+              <InspectorSkeleton
+                message={
+                  selectedStep || detail.isLoading
+                    ? null
+                    : "Pick a row to read its input and output."
+                }
+              />
+            )}
           </div>
         </>
       )}
     </>
   );
+}
+
+/** One run as a foldable group: a header row (agent, workflow, when, size,
+ * cost) and, unfolded, its model and tool calls on bars scaled to the run. */
+function RunGroup({
+  run,
+  open,
+  onToggle,
+  selected,
+  onSelect,
+}: {
+  run: Run;
+  open: boolean;
+  onToggle: () => void;
+  selected: string;
+  onSelect: (spanId: string) => void;
+}) {
+  const startMs = run.steps.length
+    ? Math.min(...run.steps.map((s) => toMs(s.startTime)))
+    : toMs(run.startTime);
+  const endMs = run.steps.length
+    ? Math.max(...run.steps.map((s) => toMs(s.startTime) + s.durationMs))
+    : toMs(run.endTime);
+  const total = Math.max(1, endMs - startMs);
+  const color = agentColor(run.agentName);
+  return (
+    <div className="flex flex-col">
+      {/* Run header — the group row. Same height and grid as the step rows so
+          the duration column lines up down the whole tree. */}
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className={cn(
+          ROW_GRID,
+          "min-h-11 cursor-pointer items-center rounded-md py-1 text-left text-xs hover:bg-accent/80 @lg:text-sm dark:hover:bg-accent/50",
+        )}
+      >
+        <div className="flex min-w-0 items-center gap-2 pr-3">
+          <IconChevronRight
+            className={cn(
+              "size-3 shrink-0 text-muted-foreground/60 transition-transform",
+              open && "rotate-90",
+            )}
+          />
+          <span
+            className="flex size-4.5 shrink-0 items-center justify-center rounded-md corner-squircle"
+            style={{ backgroundColor: `${color}26` } as CSSProperties}
+          >
+            <AgentIcon name={run.agentName} className="size-3" />
+          </span>
+          <div className="flex min-w-0 flex-col">
+            <span className="truncate font-medium">
+              {run.workflowName ?? run.agentName ?? "Run"}
+            </span>
+            <span className="truncate text-[11px] text-muted-foreground">
+              {formatDateTime(run.startTime)}
+            </span>
+          </div>
+        </div>
+        <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+          <span className="inline-flex items-center gap-1">
+            <AgentIcon name={run.agentName} className="size-3" />
+            {run.agentName ?? "—"}
+          </span>
+          <span>·</span>
+          <span className="tabular-nums">
+            {formatCount(run.steps.length)}{" "}
+            {run.steps.length === 1 ? "step" : "steps"}
+          </span>
+          <span>·</span>
+          <span className="tabular-nums">{formatCost(run.totalCost)}</span>
+          {run.errorCount > 0 && (
+            <Badge variant="rose" className="shrink-0 gap-1 font-sans">
+              <IconAlertTriangle className="size-3" />
+              {run.errorCount}
+            </Badge>
+          )}
+          <span className="ml-auto hidden items-center gap-1 @lg:flex">
+            {run.sessionId && (
+              <Link
+                href={`/sessions/${encodeURIComponent(run.sessionId)}`}
+                onClick={(e) => e.stopPropagation()}
+                title="Open the session"
+                className="inline-flex items-center rounded-md p-1 hover:bg-muted hover:text-foreground"
+              >
+                <IconMessage2Filled className="size-3.5 text-sky-500" />
+              </Link>
+            )}
+            {run.workflowName && run.workflowRunId && (
+              <Link
+                href={
+                  `/workflows/${encodeURIComponent(run.workflowName)}?run=${encodeURIComponent(run.workflowRunId)}` as Route
+                }
+                onClick={(e) => e.stopPropagation()}
+                title="Open the workflow run"
+                className="inline-flex items-center rounded-md p-1 hover:bg-muted hover:text-foreground"
+              >
+                <IconSitemapFilled className="size-3.5 text-emerald-500" />
+              </Link>
+            )}
+          </span>
+        </div>
+        <span className="text-right text-xs text-muted-foreground tabular-nums @lg:text-sm">
+          {formatSpanDuration(run.durationMs)}
+        </span>
+      </button>
+
+      {open && (
+        <div className="flex flex-col">
+          {run.steps.length === 0 ? (
+            <p className="py-2 pl-9 text-xs text-muted-foreground italic">
+              No model or tool calls recorded for this run.
+            </p>
+          ) : (
+            run.steps.map((s) => (
+              <StepRow
+                key={s.spanId}
+                step={s}
+                runStartMs={startMs}
+                totalMs={total}
+                selected={s.spanId === selected}
+                onSelect={() => onSelect(s.spanId)}
+              />
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One model call or tool call — the trace waterfall's row, with its bar
+ * placed on the run's own clock. */
+function StepRow({
+  step,
+  runStartMs,
+  totalMs,
+  selected,
+  onSelect,
+}: {
+  step: Step;
+  runStartMs: number;
+  totalMs: number;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const isError = step.status === "error";
+  const isAborted = step.status === "aborted";
+  const offset = ((toMs(step.startTime) - runStartMs) / totalMs) * 100;
+  const width = Math.max(0.6, (step.durationMs / totalMs) * 100);
+  const accent =
+    step.spanType === "llm"
+      ? modelBrandColor(step.provider, step.modelId)
+      : null;
+  const barClass = isError
+    ? "bg-rose-500"
+    : isAborted
+      ? "bg-amber-500"
+      : accent
+        ? undefined
+        : spanTypeBar(step.spanType);
+  const label =
+    step.spanType === "llm"
+      ? step.modelId
+        ? formatModelName(step.modelId)
+        : step.name
+      : step.name;
+  return (
+    <button
+      id={`step-${step.spanId}`}
+      type="button"
+      onClick={onSelect}
+      className={cn(
+        ROW_GRID,
+        "min-h-10 cursor-pointer items-center rounded-md py-1 text-left text-xs @lg:text-sm",
+        selected
+          ? "bg-accent dark:bg-accent/70"
+          : "hover:bg-accent/80 dark:hover:bg-accent/50",
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-2 pr-3 pl-7">
+        <SpanIconChip
+          span={{
+            name: step.name,
+            spanType: step.spanType,
+            provider: step.provider,
+            modelId: step.modelId,
+          }}
+        />
+        <span
+          className={cn("truncate", step.spanType === "tool" && "font-mono")}
+          title={step.name}
+        >
+          {label}
+        </span>
+        {isError && (
+          <Badge variant="rose" className="shrink-0 gap-1">
+            <IconAlertTriangle className="size-3" />
+            error
+          </Badge>
+        )}
+      </div>
+      <div className="relative h-5">
+        <div
+          className={cn(
+            "absolute top-1/2 h-2 -translate-y-1/2 rounded-xs",
+            barClass,
+          )}
+          style={{
+            left: `${Math.min(offset, 99.4)}%`,
+            width: `${Math.min(width, 100 - Math.min(offset, 99.4))}%`,
+            ...(barClass ? {} : { backgroundColor: accent ?? undefined }),
+          }}
+          title={`${label} · ${formatSpanDuration(step.durationMs)}${
+            step.totalCost != null ? ` · ${formatCost(step.totalCost)}` : ""
+          }`}
+        />
+      </div>
+      <span className="text-right text-muted-foreground tabular-nums">
+        {formatSpanDuration(step.durationMs)}
+      </span>
+    </button>
+  );
+}
+
+function TreeSkeleton() {
+  return (
+    <div className="flex flex-col gap-2">
+      {[0, 1].map((g) => (
+        <div key={g} className="flex flex-col gap-2">
+          <Skeleton className="h-9 w-2/3" />
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className={cn(ROW_GRID, "items-center gap-2 pl-7")}>
+              <Skeleton className="h-4 w-28" />
+              <Skeleton
+                className="h-2"
+                style={{ marginLeft: `${i * 18}%`, width: "22%" }}
+              />
+              <Skeleton className="ml-auto h-4 w-10" />
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Stand-in for the inspector while the selected row's trace loads (same
+ * width and chrome as the real panel, so nothing shifts when it lands). */
+function InspectorSkeleton({ message }: { message: string | null }) {
+  return (
+    <aside className="sticky top-4 w-[420px] shrink-0 self-start">
+      <div className="flex flex-col gap-4 corner-squircle rounded-lg bg-card p-5 shadow-(--custom-shadow) squircle:rounded-3xl">
+        {message ? (
+          <p className="text-sm text-muted-foreground">{message}</p>
+        ) : (
+          <>
+            <Skeleton className="h-5 w-40" />
+            <div className="grid grid-cols-2 gap-4">
+              <Skeleton className="h-8" />
+              <Skeleton className="h-8" />
+              <Skeleton className="h-8" />
+              <Skeleton className="h-8" />
+            </div>
+            <Skeleton className="h-40" />
+          </>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+/** Every agent any run touched, in first-seen order. */
+function agentsOf(runs: Run[]): string[] {
+  const out: string[] = [];
+  for (const r of runs) for (const a of r.agents) if (!out.includes(a)) out.push(a);
+  return out;
 }
 
 /** The paste box: a value typed or pasted here opens its timeline on Enter,
@@ -647,407 +932,3 @@ function ValueInput({
   );
 }
 
-/** Every agent any run touched, in first-seen order. */
-function agentsOf(runs: Run[]): string[] {
-  const out: string[] = [];
-  for (const r of runs) for (const a of r.agents) if (!out.includes(a)) out.push(a);
-  return out;
-}
-
-/** The agents a run touched, in first-run order: a tight stack of their
- * tinted ghosts (up to four, then "+n"), each named on hover. Sits at the end
- * of the Run cell so the message text truncates before the agents do. */
-function AgentStack({ names }: { names: string[] }) {
-  if (names.length === 0) return null;
-  const shown = names.slice(0, 4);
-  const rest = names.length - shown.length;
-  return (
-    <span
-      className="ml-auto flex shrink-0 items-center gap-1 pl-2"
-      title={names.join(" → ")}
-    >
-      {shown.map((n) => (
-        <AgentIcon key={n} name={n} className="size-3.5" />
-      ))}
-      {rest > 0 && (
-        <span className="text-xs text-muted-foreground tabular-nums">
-          +{rest}
-        </span>
-      )}
-    </span>
-  );
-}
-
-/** Expanded row: the run's overview on the left (timing, size, cost, where it
- * lives), its tool steps as a flow and its exchange — the opening message to
- * the final answer — on the right, then the turns it took, each linking to
- * its trace. Everything comes with the timeline payload; nothing to fetch. */
-function RunDrawer({
-  run,
-  customer,
-  colSpan,
-}: {
-  run: Run;
-  customer: Timeline["customer"];
-  colSpan: number;
-}) {
-  // One node per tool call, in call order across the run's turns — the run's
-  // shape (load_case → update_crm → hand_off). NodeFlow folds repeats to ×N.
-  const nodes: FlowNode[] = run.turns.flatMap((t) =>
-    t.toolCalls.map((tc) => ({
-      id: `${t.traceId}:${tc.name}`,
-      icon: (
-        <IconTool
-          className={cn(
-            "fill-current stroke-1",
-            tc.errorCount > 0 ? "text-current" : "text-blue-500",
-          )}
-        />
-      ),
-      label: tc.name,
-      sublabel: t.agentName,
-      status: tc.errorCount > 0 ? ("error" as const) : ("ok" as const),
-      timestamp: t.startTime,
-      durationMs: null,
-    })),
-  );
-  const turnWord = run.turns.length === 1 ? "turn" : "turns";
-  return (
-    <DrawerRow colSpan={colSpan} className="pt-6">
-      <DrawerColumns
-        overview={
-          <>
-            {run.errorCount > 0 && (
-              <div className="flex h-5 items-center">
-                <Badge variant="rose" className="font-sans">
-                  <IconAlertTriangle />
-                  {formatCount(run.errorCount)}
-                  {run.errorCount === 1 ? " error" : " errors"}
-                </Badge>
-              </div>
-            )}
-            <div className="grid grid-cols-2 gap-4">
-              <Meta label="Started" value={formatDateTime(run.startTime)} />
-              <Meta label="Duration" value={formatSpanDuration(run.durationMs)} />
-              <Meta label="Traces" value={formatCount(run.turns.length)} />
-              <Meta label="Tokens" value={formatTokens(run.totalTokens)} />
-              <Meta label="Cost" value={formatCost(run.totalCost, 4)} />
-              <Meta
-                label="Customer"
-                value={
-                  <CustomerValue
-                    customerId={customer?.customerId ?? null}
-                    customerName={customer?.customerName}
-                    imageUrl={customer?.customerImageUrl}
-                  />
-                }
-              />
-              <Meta
-                label="Agent"
-                value={
-                  run.agentName ? (
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      <AgentIcon name={run.agentName} className="size-3.5" />
-                      <span className="truncate">{run.agentName}</span>
-                    </span>
-                  ) : (
-                    <MetaEmpty />
-                  )
-                }
-              />
-              <Meta
-                label="Workflow"
-                value={
-                  run.workflowName ? (
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      <IconSitemapFilled className="size-3.5 shrink-0 text-emerald-500" />
-                      <span className="truncate">{run.workflowName}</span>
-                    </span>
-                  ) : (
-                    <MetaEmpty />
-                  )
-                }
-              />
-              <Meta
-                label={run.models.length === 1 ? "Model" : "Models"}
-                className="col-span-2"
-                value={<ModelsValue models={run.models} />}
-              />
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2.5">
-              <Button
-                size="sm"
-                variant="secondary"
-                className={cn("w-fit", DRAWER_BUTTON_CLASS)}
-                render={
-                  // biome-ignore lint/suspicious/noExplicitAny: typed-routes string href
-                  <Link href={`/traces/${encodeURIComponent(run.firstTraceId)}` as any} />
-                }
-              >
-                <IconAffiliateFilled className="text-[#8b5e34] dark:text-[#c9a888]" />
-                See first trace
-                <IconArrowUpRight className="mt-px" />
-              </Button>
-              {run.sessionId && <SessionButton sessionId={run.sessionId} />}
-              {run.workflowName && run.workflowRunId && (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  className={cn("w-fit", DRAWER_BUTTON_CLASS)}
-                  render={
-                    // biome-ignore lint/suspicious/noExplicitAny: typed-routes string href
-                    <Link
-                      href={
-                        `/workflows/${encodeURIComponent(run.workflowName)}?run=${encodeURIComponent(run.workflowRunId)}` as any
-                      }
-                    />
-                  }
-                >
-                  <IconSitemapFilled className="text-emerald-500" />
-                  See workflow run
-                  <IconArrowUpRight className="mt-px" />
-                </Button>
-              )}
-            </div>
-          </>
-        }
-      >
-        <div className="flex flex-col gap-5">
-          <DrawerSection label="Steps">
-            {nodes.length === 0 ? (
-              <span className="text-xs text-muted-foreground">
-                No tool calls in this run.
-              </span>
-            ) : (
-              <NodeFlow
-                nodes={nodes}
-                onNodeClick={(id) =>
-                  document
-                    .getElementById(`tool-${id}`)
-                    ?.scrollIntoView({ behavior: "smooth", block: "center" })
-                }
-              />
-            )}
-          </DrawerSection>
-          <DrawerSection label="Exchange">
-            {!run.openingInput && !run.outcome ? (
-              <span className="text-xs text-muted-foreground">
-                Trace payload unavailable.
-              </span>
-            ) : (
-              <Conversation
-                input={run.openingInput}
-                output={run.outcome}
-                emptyHint="The run ended without a text answer."
-                clamp={320}
-              />
-            )}
-          </DrawerSection>
-          <DrawerSection label={`${formatCount(run.turns.length)} ${turnWord}`}>
-            <ToolLog run={run} />
-          </DrawerSection>
-        </div>
-      </DrawerColumns>
-    </DrawerRow>
-  );
-}
-
-function DrawerSection({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="flex flex-col gap-2">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      {children}
-    </div>
-  );
-}
-
-type ToolCall = RouterOutputs["traces"]["runToolCalls"][number];
-
-/** A payload as the reader wants it: JSON pretty-printed, prose as markdown.
- * Tool payloads are serialized JSON almost always; an AI SDK tool output may
- * wrap the value as {type: "json"|"text", value}. */
-function PayloadBlock({ raw }: { raw: string }) {
-  let data: unknown;
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    return (
-      <div className="max-h-56 overflow-y-auto rounded-md bg-background/60 p-2">
-        <Prose>{raw}</Prose>
-      </div>
-    );
-  }
-  if (data && typeof data === "object" && "type" in data && "value" in data) {
-    const d = data as { type: unknown; value: unknown };
-    if (d.type === "text" && typeof d.value === "string") {
-      return (
-        <div className="max-h-56 overflow-y-auto rounded-md bg-background/60 p-2">
-          <Prose>{d.value}</Prose>
-        </div>
-      );
-    }
-    if (d.type === "json") data = d.value;
-  }
-  return <JsonBlock data={data} className="rounded-md bg-background/60" />;
-}
-
-/** The run told turn by turn, each tool call inline with its input and output
- * — no trip to the trace page. Fetched when the drawer opens; calls start
- * open, a click on the header folds one away. */
-function ToolLog({ run }: { run: Run }) {
-  const { projectId } = useProject();
-  const calls = useQuery({
-    ...trpc.traces.runToolCalls.queryOptions({
-      projectId: projectId!,
-      traceIds: run.turns.map((t) => t.traceId),
-    }),
-    enabled: !!projectId && run.turns.length > 0,
-  });
-  const byTrace = new Map<string, ToolCall[]>();
-  for (const c of calls.data ?? []) {
-    const list = byTrace.get(c.traceId) ?? [];
-    list.push(c);
-    byTrace.set(c.traceId, list);
-  }
-  return (
-    <ol className="flex flex-col gap-4">
-      {run.turns.map((t, i) => {
-        const turnCalls = byTrace.get(t.traceId) ?? [];
-        return (
-          <li key={t.traceId} className="flex flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-              <Link
-                href={`/traces/${encodeURIComponent(t.traceId)}`}
-                className="inline-flex items-center gap-0.5 font-medium text-foreground tabular-nums underline-offset-2 transition-colors hover:underline"
-              >
-                Turn {i + 1}
-                <IconArrowUpRight className="size-3" />
-              </Link>
-              {t.status === "error" && (
-                <span className="size-1.5 shrink-0 rounded-full bg-rose-500" />
-              )}
-              {t.status === "aborted" && (
-                <span className="size-1.5 shrink-0 rounded-full bg-amber-500" />
-              )}
-              <span>{formatDateTime(t.startTime)}</span>
-              <span>·</span>
-              <span className="tabular-nums">{formatSpanDuration(t.durationMs)}</span>
-              <span>·</span>
-              <span className="tabular-nums">{formatCost(t.totalCost)}</span>
-            </div>
-            {calls.isLoading ? (
-              t.toolCalls.length > 0 && (
-                <div className="ml-3 flex flex-col gap-2 border-l border-border/60 pl-3">
-                  {t.toolCalls.map((tc) => (
-                    <Skeleton key={tc.name} className="h-7 w-48" />
-                  ))}
-                </div>
-              )
-            ) : turnCalls.length === 0 ? (
-              <p className="ml-3 border-l border-border/60 pl-3 text-xs text-muted-foreground italic">
-                No tool calls — the model answered.
-              </p>
-            ) : (
-              <div className="ml-3 flex flex-col gap-2 border-l border-border/60 pl-3">
-                {turnCalls.map((c) => (
-                  <ToolCallBlock
-                    key={c.spanId}
-                    call={c}
-                    anchor={`tool-${t.traceId}:${c.name}`}
-                  />
-                ))}
-              </div>
-            )}
-          </li>
-        );
-      })}
-      {calls.error && (
-        <li className="text-xs text-muted-foreground">
-          Couldn't load the tool calls: {calls.error.message}
-        </li>
-      )}
-    </ol>
-  );
-}
-
-function ToolCallBlock({ call, anchor }: { call: ToolCall; anchor: string }) {
-  const [open, setOpen] = useState(true);
-  const isError = call.status === "error";
-  return (
-    <div
-      id={anchor}
-      className={cn(
-        "scroll-mt-24 corner-squircle rounded-lg bg-card shadow-(--custom-shadow) dark:bg-muted-foreground/10",
-        isError && "ring-1 ring-rose-500/40",
-      )}
-    >
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-xs"
-      >
-        {open ? (
-          <IconChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
-        ) : (
-          <IconChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
-        )}
-        <IconTool
-          className={cn(
-            "mb-px size-3.5 shrink-0 fill-current stroke-1",
-            isError ? "text-rose-500" : "text-blue-500",
-          )}
-        />
-        <span className="font-mono font-medium">{call.name}</span>
-        {isError && (
-          <Badge variant="rose" className="font-sans">
-            <IconAlertTriangle />
-            Error
-          </Badge>
-        )}
-        <span className="ml-auto tabular-nums text-muted-foreground">
-          {formatSpanDuration(call.durationMs)}
-        </span>
-      </button>
-      {open && (
-        <div className="flex flex-col gap-3 px-3 pb-3">
-          {call.errorMessage && (
-            <p className="text-xs text-rose-600 dark:text-rose-400">
-              {call.errorMessage}
-            </p>
-          )}
-          <div className="flex flex-col gap-1">
-            <span className="text-[11px] text-muted-foreground">Input</span>
-            {call.input ? (
-              <PayloadBlock raw={call.input} />
-            ) : (
-              <span className="text-xs text-muted-foreground/60">—</span>
-            )}
-          </div>
-          <div className="flex flex-col gap-1">
-            <span className="text-[11px] text-muted-foreground">Output</span>
-            {call.output ? (
-              <PayloadBlock raw={call.output} />
-            ) : (
-              <span className="text-xs text-muted-foreground/60">—</span>
-            )}
-          </div>
-          {call.truncated && (
-            <Link
-              href={`/traces/${encodeURIComponent(call.traceId)}`}
-              className="inline-flex w-fit items-center gap-0.5 text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-            >
-              Payload cut at 16k characters — full version in the trace
-              <IconArrowUpRight className="size-3" />
-            </Link>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}

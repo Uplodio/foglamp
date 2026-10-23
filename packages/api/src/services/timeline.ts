@@ -2,7 +2,7 @@ import {
   getCustomerDisplays,
   getTraceRootContents,
   getTraceToolCalls,
-  getTraceToolSpans,
+  getTraceSpanOutline,
   listTraces,
   type TraceListRow,
 } from "@foglamp/clickhouse";
@@ -47,6 +47,20 @@ export type TimelineTurn = {
   toolCalls: ToolCall[];
 };
 
+export type TimelineStep = {
+  spanId: string;
+  traceId: string;
+  spanType: "llm" | "tool";
+  name: string;
+  provider: string | null;
+  modelId: string | null;
+  startTime: string;
+  durationMs: number;
+  status: string;
+  totalTokens: number;
+  totalCost: number | null;
+};
+
 export type TimelineRun = {
   /** The grouping key: the session id, else the workflow run id, else the trace id. */
   runId: string;
@@ -76,6 +90,9 @@ export type TimelineRun = {
   /** The last turn that produced text — what the run reported back. */
   outcome: string | null;
   turns: TimelineTurn[];
+  /** Every model call and tool call of the run, in start order — the rows of
+   * the run in the left-hand tree. */
+  steps: TimelineStep[];
 };
 
 /**
@@ -108,13 +125,32 @@ export async function getMetadataTimeline(
   // The value's customer: a record belongs to one tenant, so the first trace
   // that names one speaks for the timeline (same rule as a workflow run).
   const customerId = traces.find((t) => t.customer_id)?.customer_id ?? null;
-  const [contents, toolCalls, customerDims] = await Promise.all([
+  const [contents, toolCalls, customerDims, outline] = await Promise.all([
     getTraceRootContents(ch, { projectId: input.projectId, traceIds }),
     getTraceToolCalls(ch, { projectId: input.projectId, traceIds }),
     customerId
       ? getCustomerDisplays(ch, { projectId: input.projectId, customerIds: [customerId] })
       : Promise.resolve([]),
+    getTraceSpanOutline(ch, { projectId: input.projectId, traceIds }),
   ]);
+  const stepsByTrace = new Map<string, TimelineStep[]>();
+  for (const o of outline) {
+    const list = stepsByTrace.get(o.trace_id) ?? [];
+    list.push({
+      spanId: o.span_id,
+      traceId: o.trace_id,
+      spanType: o.span_type === "llm" ? "llm" : "tool",
+      name: o.name,
+      provider: o.provider || null,
+      modelId: o.model_id || null,
+      startTime: o.start_time,
+      durationMs: num(o.duration_ms),
+      status: o.status,
+      totalTokens: num(o.total_tokens),
+      totalCost: decimalOrNull(o.total_cost),
+    });
+    stepsByTrace.set(o.trace_id, list);
+  }
   const customer = customerId
     ? {
         customerId,
@@ -184,11 +220,13 @@ export async function getMetadataTimeline(
         openingInput: c?.input ? c.input.slice(0, OPENING_INPUT_CAP) : null,
         outcome: null,
         turns: [],
+        steps: [],
       };
       runByKey.set(key, run);
       runs.push(run);
     }
     run.turns.push(turn);
+    run.steps.push(...(stepsByTrace.get(m.trace_id) ?? []));
     run.lastTraceId = m.trace_id;
     if (turn.agentName && !run.agents.includes(turn.agentName)) run.agents.push(turn.agentName);
     for (const model of turn.models) if (!run.models.includes(model)) run.models.push(model);
@@ -232,36 +270,4 @@ export async function getMetadataTimeline(
     },
     runs,
   };
-}
-
-// Per-payload cap for the inline tool log: enough for a case file or a CRM
-// update, small enough that a 5-turn run stays a light request.
-const TOOL_PAYLOAD_CAP = 16_000;
-
-/** One run's tool calls with their input/output, in call order — fetched
- * when its timeline drawer opens. */
-export async function getRunToolCalls(
-  db: Db,
-  ch: Ch,
-  userId: string,
-  input: { projectId: string; traceIds: string[] },
-) {
-  await requireProjectAccess(db, userId, input.projectId);
-  const spans = await getTraceToolSpans(ch, {
-    projectId: input.projectId,
-    traceIds: input.traceIds,
-    payloadCap: TOOL_PAYLOAD_CAP,
-  });
-  return spans.map((s) => ({
-    spanId: s.span_id,
-    traceId: s.trace_id,
-    name: s.name,
-    startTime: s.start_time,
-    durationMs: num(s.duration_ms),
-    status: s.status,
-    errorMessage: s.error_message || null,
-    input: s.input || null,
-    output: s.output || null,
-    truncated: s.input.length >= TOOL_PAYLOAD_CAP || s.output.length >= TOOL_PAYLOAD_CAP,
-  }));
 }

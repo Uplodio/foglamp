@@ -3193,39 +3193,40 @@ export function getTraceToolCalls(
 	);
 }
 
-export type TraceToolSpanRow = {
+export type TraceSpanOutlineRow = {
 	span_id: string;
 	trace_id: string;
+	span_type: string;
 	name: string;
+	provider: string;
+	model_id: string;
 	start_time: string;
 	duration_ms: number;
 	status: string;
-	error_message: string;
-	input: string;
-	output: string;
+	total_tokens: string;
+	total_cost: string | null;
 };
 
 /**
- * Every tool span of the given traces, in call order, with its payloads cut
- * to `payloadCap` chars — the timeline drawer's inline tool log, so a run's
- * calls read in place instead of one trace page at a time.
+ * The model calls and tool calls of the given traces, without payloads, in
+ * start order — the timeline's left-hand tree. Payloads load per trace
+ * (`traces.get`) only when a row is opened in the inspector.
  */
-export function getTraceToolSpans(
+export function getTraceSpanOutline(
 	client: ClickHouseClient,
-	params: { projectId: string; traceIds: string[]; payloadCap: number },
-): Promise<TraceToolSpanRow[]> {
+	params: { projectId: string; traceIds: string[] },
+): Promise<TraceSpanOutlineRow[]> {
 	if (params.traceIds.length === 0) return Promise.resolve([]);
-	return rows<TraceToolSpanRow>(
+	return rows<TraceSpanOutlineRow>(
 		client,
 		`SELECT
-       span_id, trace_id, name, start_time, duration_ms, status, error_message,
-       substring(input, 1, {cap:UInt32}) AS input,
-       substring(output, 1, {cap:UInt32}) AS output
+       span_id, trace_id, span_type, name, provider, model_id, start_time,
+       duration_ms, status, total_tokens, total_cost
      FROM spans FINAL
      WHERE project_id = {projectId:String}
        AND trace_id IN {ids:Array(String)}
-       AND span_type = 'tool'
+       AND span_type IN ('llm', 'tool')
      ORDER BY start_time ASC, span_id ASC`,
-		{ projectId: params.projectId, ids: params.traceIds, cap: params.payloadCap },
+		{ projectId: params.projectId, ids: params.traceIds },
 	);
 }

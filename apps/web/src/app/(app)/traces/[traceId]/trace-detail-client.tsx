@@ -1185,7 +1185,7 @@ type SubtreeStats = { spans: number; cost: number | null; tokens: number };
  * descendant carried one, so an unpriced subtree renders no cost field rather
  * than a misleading $0.
  */
-function computeSubtreeStats(spans: Span[]): Map<string, SubtreeStats> {
+export function computeSubtreeStats(spans: Span[]): Map<string, SubtreeStats> {
   const children = new Map<string, Span[]>();
   for (const s of spans) {
     if (!s.parentSpanId) continue;
@@ -1663,7 +1663,7 @@ const clampPanelWidth = (w: number) =>
  * left edge is a drag handle: the panel resizes between fixed limits and the
  * timeline (flex-1 beside it) absorbs the difference.
  */
-function DetailPanel({
+export function DetailPanel({
   span,
   scores,
   trace,
